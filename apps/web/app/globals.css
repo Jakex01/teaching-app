@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/* Design tokens from the Doodle Board prototype ("playful bold").
+   Use them as Tailwind classes: bg-paper, text-ink, border-ink, bg-tomato, font-fun, shadow-hard, rounded-card… */
+@theme {
+  --color-ink: #1E1B3A;
+  --color-paper: #FFF6E5;
+  --color-dot: #EADBC0;
+  --color-tomato: #FF5A4E;
+  --color-tangerine: #FF9F1C;
+  --color-sun: #FFC93C;
+  --color-mint: #22C1A0;
+  --color-sky: #3D8BFF;
+  --color-grape: #8B5CF6;
+  --color-bubble: #FF6FB5;
+
+  --font-ui: 'Nunito', system-ui, sans-serif;
+  --font-fun: 'Fredoka', 'Nunito', system-ui, sans-serif;
+
+  --shadow-hard: 4px 4px 0 var(--color-ink);
+  --shadow-hard-sm: 2px 2px 0 var(--color-ink);
+  --shadow-hard-lg: 8px 8px 0 var(--color-ink);
+
+  --radius-card: 18px;
+  --ease-bounce: cubic-bezier(.34, 1.56, .64, 1);
+}
+
+@layer base {
+  body {
+    background-color: var(--color-paper);
+    background-image: radial-gradient(var(--color-dot) 2px, transparent 2px);
+    background-size: 26px 26px;
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+}

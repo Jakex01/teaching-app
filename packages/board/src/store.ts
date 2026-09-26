@@ -1,0 +1,62 @@
+// UI state shared between the React components and the canvas engine.
+
+import { create } from 'zustand';
+import { COLORS, type SizeIndex, type ToolId } from './constants';
+import { getPref } from './prefs';
+import type { User } from './protocol';
+
+export interface Style {
+  color: string;
+  hlColor: string;
+  size: SizeIndex;
+  fill: boolean;
+}
+
+export interface Me {
+  id: string | null;
+  name: string;
+  role: User['role'];
+  color: string;
+}
+
+export interface RemoteCursor { x: number; y: number; t: number }
+
+interface UIState {
+  me: Me | null;
+  users: User[];
+  tool: ToolId;
+  style: Style;
+  selection: { count: number; hasShape: boolean };
+  canUndo: boolean;
+  canRedo: boolean;
+  cam: { x: number; y: number; z: number };
+  cursors: Record<string, RemoteCursor>;
+  spotlightOn: boolean;
+  following: string | null; // name of the teacher being followed
+  toast: { msg: string; ms: number; key: number } | null;
+}
+
+export const useUI = create<UIState>(() => ({
+  me: null,
+  users: [],
+  tool: 'pen',
+  style: {
+    color: getPref('color') ?? COLORS[0].c,
+    hlColor: getPref('hlColor') ?? COLORS[3].c,
+    size: getPref('size') ?? 1,
+    fill: getPref('fill') ?? false,
+  },
+  selection: { count: 0, hasShape: false },
+  canUndo: false,
+  canRedo: false,
+  cam: { x: 0, y: 0, z: 1 },
+  cursors: {},
+  spotlightOn: false,
+  following: null,
+  toast: null,
+}));
+
+let toastKey = 0;
+export function showToast(msg: string, ms = 1800) {
+  useUI.setState({ toast: { msg, ms, key: ++toastKey } });
+}

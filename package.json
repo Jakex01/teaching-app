@@ -1,0 +1,28 @@
+{
+  "name": "teaching-app",
+  "version": "0.3.0",
+  "description": "Online tutoring app with a persistent whiteboard per student",
+  "private": true,
+  "license": "UNLICENSED",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n web,sync -c cyan,magenta \"npm run dev -w @teaching/web\" \"npm run dev -w @teaching/sync\"",
+    "build": "npm run build -w @teaching/web",
+    "start": "concurrently -k -n web,sync -c cyan,magenta \"npm start -w @teaching/web\" \"npm start -w @teaching/sync\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "concurrently": "^10.0.5",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2"
+  }
+}

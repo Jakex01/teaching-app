@@ -5,26 +5,51 @@ import { RemoteCursors, Toast } from './components/Overlays';
 import { Dock, History, StyleBubble, Zoom } from './components/Toolbar';
 import { FollowBanner, TopLeft, TopRight } from './components/TopBar';
 import type { Role } from './protocol';
+import { resolveRoomId } from './room';
+import { useUI, type Notebook } from './store';
 
 import './styles.css';
+
+/** A student's notebook opened from the app: who you are was already decided by the server. */
+export interface BoardSession extends Notebook {
+  room: string;
+  /** Signed by the web app, checked by the sync server. */
+  ticket: string;
+  name: string;
+  role: Role;
+  color: string;
+}
 
 export interface BoardAppProps {
   /** WebSocket address of the sync server, e.g. ws://localhost:3001/ws */
   syncUrl?: string;
+  /** Without a session the board is an open demo room: ?room= from the URL and a join screen. */
+  session?: BoardSession;
 }
 
-export function BoardApp({ syncUrl }: BoardAppProps) {
+export function BoardApp({ syncUrl, session }: BoardAppProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const editor = useRef<HTMLTextAreaElement>(null);
-  const [joinVisible, setJoinVisible] = useState(true);
+  const [room] = useState(() => session?.room ?? resolveRoomId());
+  const [joinVisible, setJoinVisible] = useState(!session);
 
   useEffect(() => {
+    useUI.setState({
+      roomId: room,
+      notebook: session ? { title: session.title, backHref: session.backHref, backLabel: session.backLabel } : null,
+    });
     engine.attach(canvas.current!, editor.current!);
-    return () => engine.detach();
-  }, []);
+    if (session) {
+      engine.join({ name: session.name, role: session.role, color: session.color }, session.room, { syncUrl, ticket: session.ticket });
+    }
+    return () => {
+      engine.leave();
+      engine.detach();
+    };
+  }, [room, session, syncUrl]);
 
   const onJoin = (me: { name: string; role: Role; color: string }) => {
-    engine.join(me, syncUrl);
+    engine.join(me, room, { syncUrl });
     setTimeout(() => setJoinVisible(false), 400); // let the fade-out finish
   };
 

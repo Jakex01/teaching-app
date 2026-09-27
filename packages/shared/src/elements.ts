@@ -10,6 +10,9 @@ export const LIMITS = {
   batch: 500,             // elements in one upsert message
   elementsPerRoom: 20_000,
   clientsPerRoom: 100,
+  imageBytes: 5 * 1024 * 1024, // one uploaded image
+  imageSide: 2048,             // images are scaled down to this before upload
+  imagesPerRoom: 300,
 } as const;
 
 export const elementId = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/);
@@ -42,10 +45,23 @@ export const TextSchema = z.object({
   x: coord, y: coord, text: z.string().max(LIMITS.text), fs: z.number().min(4).max(400),
 });
 
-export const ElementSchema = z.discriminatedUnion('type', [StrokeSchema, ShapeSchema, LineSchema, TextSchema]);
+// Images are stored as files; the element only holds their address inside this app.
+// The pattern keeps it to our own asset URLs: no outside links (tracking) and no data: URLs.
+export const assetSrc = z.string().regex(/^\/api\/assets\/[a-z0-9-]{1,40}\/[A-Za-z0-9_-]{22}\.(webp|png|jpg|gif)$/);
+
+export const ImageSchema = z.object({
+  id: elementId, by, type: z.literal('image'),
+  src: assetSrc,
+  x: coord, y: coord,
+  w: z.number().min(1).max(LIMITS.coord), h: z.number().min(1).max(LIMITS.coord),
+  rot: z.number().min(-Math.PI * 2).max(Math.PI * 2), // radians, around the centre
+});
+
+export const ElementSchema = z.discriminatedUnion('type', [StrokeSchema, ShapeSchema, LineSchema, TextSchema, ImageSchema]);
 
 export type StrokeEl = z.infer<typeof StrokeSchema>;
 export type ShapeEl = z.infer<typeof ShapeSchema>;
 export type LineEl = z.infer<typeof LineSchema>;
 export type TextEl = z.infer<typeof TextSchema>;
+export type ImageEl = z.infer<typeof ImageSchema>;
 export type BoardElement = z.infer<typeof ElementSchema>;

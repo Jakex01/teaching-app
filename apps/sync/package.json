@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "SYNC_DEV=1 tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@teaching/shared": "*",
     "tsx": "^4.23.15",
     "ws": "^8.21.3"
   },

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from 
 import { COLORS } from '../constants';
 import { getPref, setPref } from '../prefs';
 import { LIMITS, type Role } from '../protocol';
-import { roomId } from '../room';
+import { useUI } from '../store';
 
 const AVATAR_COLORS = COLORS.slice(1);
 
@@ -14,6 +14,7 @@ export function JoinScreen({ onJoin }: { onJoin: (me: { name: string; role: Role
     () => saved?.color ?? AVATAR_COLORS[crypto.getRandomValues(new Uint32Array(1))[0] % AVATAR_COLORS.length].c,
   );
   const [leaving, setLeaving] = useState(false);
+  const roomId = useUI(s => s.roomId);
   const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {

@@ -21,12 +21,21 @@ export interface Me {
 
 export interface RemoteCursor { x: number; y: number; t: number }
 
+/** Set when the board is a student's notebook opened from the app (not an open demo room). */
+export interface Notebook {
+  title: string;
+  backHref: string;
+  backLabel: string;
+}
+
 interface UIState {
+  roomId: string;
+  notebook: Notebook | null;
   me: Me | null;
   users: User[];
   tool: ToolId;
   style: Style;
-  selection: { count: number; hasShape: boolean };
+  selection: { count: number; hasShape: boolean; styleable: boolean };
   canUndo: boolean;
   canRedo: boolean;
   cam: { x: number; y: number; z: number };
@@ -37,6 +46,8 @@ interface UIState {
 }
 
 export const useUI = create<UIState>(() => ({
+  roomId: '',
+  notebook: null,
   me: null,
   users: [],
   tool: 'pen',
@@ -46,7 +57,7 @@ export const useUI = create<UIState>(() => ({
     size: getPref('size') ?? 1,
     fill: getPref('fill') ?? false,
   },
-  selection: { count: 0, hasShape: false },
+  selection: { count: 0, hasShape: false, styleable: false },
   canUndo: false,
   canRedo: false,
   cam: { x: 0, y: 0, z: 1 },

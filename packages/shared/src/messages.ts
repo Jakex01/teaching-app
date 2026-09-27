@@ -28,6 +28,8 @@ export type FollowCamera = z.infer<typeof FollowCameraSchema>;
 // Browser -> server
 export const ClientMessageSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('join'), room: roomId, name: DisplayNameSchema, role: RoleSchema, color: hexColor }),
+  // Join with a ticket signed by the web app (required for student notebooks).
+  z.object({ t: z.literal('join-ticket'), ticket: z.string().min(1).max(4000) }),
   z.object({ t: z.literal('upsert'), els: z.array(ElementSchema).min(1).max(LIMITS.batch) }),
   z.object({ t: z.literal('delete'), ids: z.array(elementId).min(1).max(LIMITS.elementsPerRoom) }),
   z.object({ t: z.literal('clear') }),

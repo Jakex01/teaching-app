@@ -37,7 +37,7 @@ export function StyleBubble() {
   const [arrowX, setArrowX] = useState<number | null>(null);
 
   const def = toolDef(tool);
-  const forSelection = tool === 'select' && selection.count > 0;
+  const forSelection = tool === 'select' && selection.styleable;
   const show = !!def?.style || forSelection;
   const hasFill = !!def?.fill || (forSelection && selection.hasShape);
   const color = tool === 'highlighter' ? style.hlColor : style.color;

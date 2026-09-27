@@ -19,6 +19,7 @@ export const TOOL_ICONS: Record<ToolId, ReactNode> = {
 
 export const ToolIcon = ({ id }: { id: ToolId }) => <Svg>{TOOL_ICONS[id]}</Svg>;
 
+export const BackIcon = () => <Svg><path d="M19 12H5M11 18l-6-6 6-6" /></Svg>;
 export const InviteIcon = () => <Svg><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /></Svg>;
 export const EyeIcon = () => <Svg><circle cx="12" cy="12" r="3.2" /><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" /></Svg>;
 export const TrashIcon = () => <Svg><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13" /></Svg>;

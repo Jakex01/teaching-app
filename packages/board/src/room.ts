@@ -14,6 +14,4 @@ export function resolveRoomId(): string {
   return id;
 }
 
-export const roomId = resolveRoomId();
-
-export const inviteLink = () => `${location.origin}${location.pathname}?room=${encodeURIComponent(roomId)}`;
+export const inviteLink = (room: string) => `${location.origin}${location.pathname}?room=${encodeURIComponent(room)}`;

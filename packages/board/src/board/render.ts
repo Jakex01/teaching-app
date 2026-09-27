@@ -1,6 +1,7 @@
 import { FONT } from '../constants';
 import type { BoardElement } from '../protocol';
 import { clamp, triPts } from './geometry';
+import { getImage } from './images';
 
 export interface Camera { x: number; y: number; z: number }
 
@@ -30,13 +31,34 @@ function tint(hex: string, a: number) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-export function drawElement(ctx: CanvasRenderingContext2D, el: BoardElement) {
+export function drawElement(ctx: CanvasRenderingContext2D, el: BoardElement, onImageLoad: () => void = () => {}) {
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = el.color;
-  ctx.fillStyle = el.color;
+  if (el.type !== 'image') {
+    ctx.strokeStyle = el.color;
+    ctx.fillStyle = el.color;
+  }
   switch (el.type) {
+    case 'image': {
+      ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
+      ctx.rotate(el.rot);
+      const img = getImage(el.src, onImageLoad);
+      if (img.status === 'ready') {
+        ctx.drawImage(img.image, -el.w / 2, -el.h / 2, el.w, el.h);
+      } else {
+        // Placeholder while loading (or if the file can't be shown).
+        ctx.fillStyle = img.status === 'error' ? '#F3E3E0' : '#F3EBDD';
+        ctx.strokeStyle = '#E6D5B8';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.roundRect(-el.w / 2, -el.h / 2, el.w, el.h, 8);
+        ctx.fill();
+        ctx.stroke();
+      }
+      break;
+    }
     case 'stroke': {
       ctx.lineWidth = el.size;
       if (el.hl) { ctx.globalAlpha = 0.38; ctx.globalCompositeOperation = 'multiply'; }

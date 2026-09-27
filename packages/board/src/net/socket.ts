@@ -19,7 +19,7 @@ export class Socket {
 
   constructor(
     private readonly url: string,
-    private readonly join: Extract<ClientMessage, { t: 'join' }>,
+    private readonly join: Extract<ClientMessage, { t: 'join' | 'join-ticket' }>,
     private readonly onMessage: (msg: ServerMessage) => void,
     private readonly onLost: () => void,
   ) {}
@@ -44,10 +44,12 @@ export class Socket {
       }
       this.onMessage(parsed.data);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       const wasReady = this.ready;
       this.ready = false;
       if (this.stopped) return;
+      // 1008 = the server refused us (bad ticket, room full…). Retrying won't help.
+      if (ev.code === 1008) { this.stopped = true; return; }
       if (wasReady) this.onLost();
       this.retryTimer = setTimeout(() => this.open(), this.delay);
       this.delay = Math.min(this.delay * 1.7, 8000);

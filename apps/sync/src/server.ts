@@ -4,12 +4,20 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { ClientMessageSchema, LIMITS, type ServerMessage } from '@teaching/shared';
+import { ClientMessageSchema, LIMITS, type ServerMessage, type User } from '@teaching/shared';
+import { isProtectedRoom, verifyTicket } from '@teaching/shared/ticket';
 import { getRoom, releaseIfEmpty, saveAll, scheduleSave, type Client, type Room } from './rooms';
 
 type Message = ReturnType<typeof ClientMessageSchema.parse>;
 
 const PORT = Number(process.env.PORT) || 3001;
+
+// Shared with the web app, which signs join tickets with it. Required outside `npm run dev`.
+const SYNC_SECRET = process.env.SYNC_SECRET || (process.env.SYNC_DEV === '1' ? 'dev-only-sync-secret' : '');
+if (!SYNC_SECRET) {
+  console.error('\n  SYNC_SECRET is not set. Set the same value for apps/web and apps/sync.\n');
+  process.exit(1);
+}
 // Web app origins allowed to connect, comma separated.
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -67,16 +75,38 @@ function makeLimiter(capacity = 240, perSecond = 120) {
 function handleMessage(client: Client, msg: Message) {
   const { ws } = client;
 
-  if (msg.t === 'join') {
+  if (msg.t === 'join' || msg.t === 'join-ticket') {
     if (client.room) return; // one room per connection
-    const room = getRoom(msg.room);
+
+    let roomId: string;
+    let user: User;
+    if (msg.t === 'join-ticket') {
+      // Identity comes from the web app's signed ticket, not from the browser.
+      const ticket = verifyTicket(msg.ticket, SYNC_SECRET);
+      if (!ticket) {
+        send(ws, { t: 'error', msg: 'Link do tablicy wygasł. Odśwież stronę.' });
+        return ws.close(1008, 'Invalid ticket');
+      }
+      roomId = ticket.room;
+      user = { id: client.id, name: ticket.name, role: ticket.role, color: ticket.color };
+    } else {
+      // Anonymous join is only allowed for open demo boards, never for a student's notebook.
+      if (isProtectedRoom(msg.room)) {
+        send(ws, { t: 'error', msg: 'Ten zeszyt jest dostępny tylko przez aplikację.' });
+        return ws.close(1008, 'Ticket required');
+      }
+      roomId = msg.room;
+      user = { id: client.id, name: msg.name, role: msg.role, color: msg.color };
+    }
+
+    const room = getRoom(roomId);
     if (room.clients.size >= LIMITS.clientsPerRoom) {
       send(ws, { t: 'error', msg: 'This room is full.' });
       releaseIfEmpty(room);
       return ws.close(1008, 'Room full');
     }
     client.room = room;
-    client.user = { id: client.id, name: msg.name, role: msg.role, color: msg.color };
+    client.user = user;
     room.clients.add(client);
     send(ws, { t: 'init', you: client.user, elements: [...room.elements.values()], users: presence(room) });
     broadcast(room, { t: 'presence', users: presence(room) }, ws);
@@ -92,6 +122,8 @@ function handleMessage(client: Client, msg: Message) {
       const accepted = [];
       let full = false;
       for (const el of msg.els) {
+        // An image may only show a file uploaded to this same notebook.
+        if (el.type === 'image' && !el.src.startsWith(`/api/assets/${room.id}/`)) continue;
         if (!room.elements.has(el.id) && room.elements.size >= LIMITS.elementsPerRoom) { full = true; continue; }
         room.elements.set(el.id, el);
         accepted.push(el);

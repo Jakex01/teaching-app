@@ -1,1 +1,1 @@
-export { BoardApp, type BoardAppProps } from './BoardApp';
+export { BoardApp, type BoardAppProps, type BoardSession } from './BoardApp';

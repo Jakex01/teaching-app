@@ -11,13 +11,16 @@ export default function Home() {
           Doodle<span className="text-tomato">Board</span>
         </h1>
         <p className="mb-6 font-bold opacity-70">
-          Stała tablica-zeszyt dla każdego ucznia. Na razie działa tablica na żywo; konta i zeszyty są w drodze.
+          Stała tablica-zeszyt dla każdego ucznia, lekcje i kartoteka w jednym miejscu.
         </p>
         <Link
-          href="/board"
+          href="/panel"
           className="flex w-full items-center justify-center rounded-2xl border-[2.5px] border-ink bg-tomato p-3.5 font-fun text-lg text-white shadow-hard transition-transform duration-150 ease-bounce hover:-translate-x-px hover:-translate-y-px active:translate-x-0.5 active:translate-y-0.5 active:shadow-none"
         >
-          Otwórz tablicę →
+          Panel nauczyciela →
+        </Link>
+        <Link href="/board" className="mt-3 block text-center font-extrabold underline opacity-70 hover:opacity-100">
+          albo otwórz pustą tablicę
         </Link>
       </div>
     </main>

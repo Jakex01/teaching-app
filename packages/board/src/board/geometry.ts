@@ -1,5 +1,5 @@
 import { FONT } from '../constants';
-import { LIMITS, type BoardElement, type ShapeEl, type TextEl } from '../protocol';
+import { LIMITS, type BoardElement, type ImageEl, type ShapeEl, type TextEl } from '../protocol';
 
 export interface Box { x1: number; y1: number; x2: number; y2: number }
 export type Pt = [number, number];
@@ -33,6 +33,40 @@ export function measureText(el: TextEl) {
 
 export const clearMeasureCache = () => measureCache.clear();
 
+// ---------- Rotated images ----------
+export const imageCenter = (el: ImageEl): Pt => [el.x + el.w / 2, el.y + el.h / 2];
+
+/** Rotates (x, y) by `rot` radians around the origin. */
+export const rotate = (x: number, y: number, rot: number): Pt =>
+  [x * Math.cos(rot) - y * Math.sin(rot), x * Math.sin(rot) + y * Math.cos(rot)];
+
+/** World point -> the image's own frame (origin at its centre, unrotated). */
+export function toImageLocal(el: ImageEl, x: number, y: number): Pt {
+  const [cx, cy] = imageCenter(el);
+  return rotate(x - cx, y - cy, -el.rot);
+}
+
+/** Image-local point -> world. */
+export function fromImageLocal(el: ImageEl, lx: number, ly: number): Pt {
+  const [cx, cy] = imageCenter(el);
+  const [rx, ry] = rotate(lx, ly, el.rot);
+  return [cx + rx, cy + ry];
+}
+
+/** Corners in world coordinates: top-left, top-right, bottom-right, bottom-left. */
+export function imageCorners(el: ImageEl): [Pt, Pt, Pt, Pt] {
+  const hw = el.w / 2, hh = el.h / 2;
+  return [fromImageLocal(el, -hw, -hh), fromImageLocal(el, hw, -hh), fromImageLocal(el, hw, hh), fromImageLocal(el, -hw, hh)];
+}
+
+/** Keeps an angle in (-π, π]. */
+export function normalizeAngle(a: number) {
+  a = a % (Math.PI * 2);
+  if (a > Math.PI) a -= Math.PI * 2;
+  if (a <= -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
 // ---------- Bounds & hit testing ----------
 export function bbox(el: BoardElement): Box {
   switch (el.type) {
@@ -47,6 +81,11 @@ export function bbox(el: BoardElement): Box {
     case 'text': {
       const m = measureText(el);
       return { x1: el.x, y1: el.y, x2: el.x + m.w, y2: el.y + m.h };
+    }
+    case 'image': {
+      const c = imageCorners(el);
+      const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
+      return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
     }
     default:
       return { x1: el.x, y1: el.y, x2: el.x + el.w, y2: el.y + el.h };
@@ -77,6 +116,10 @@ export function hit(el: BoardElement, x: number, y: number, tol: number): boolea
     case 'text': {
       const b = bbox(el);
       return x >= b.x1 - tol && x <= b.x2 + tol && y >= b.y1 - tol && y <= b.y2 + tol;
+    }
+    case 'image': {
+      const [lx, ly] = toImageLocal(el, x, y);
+      return Math.abs(lx) <= el.w / 2 + tol && Math.abs(ly) <= el.h / 2 + tol;
     }
     case 'rect': case 'ellipse': case 'triangle': {
       const b = bbox(el);

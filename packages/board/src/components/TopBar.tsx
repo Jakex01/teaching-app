@@ -1,21 +1,44 @@
 import { useEffect, useRef, useState } from 'react';
 import { engine } from '../board/engine';
-import { inviteLink, roomId } from '../room';
+import { inviteLink } from '../room';
 import { showToast, useUI } from '../store';
-import { BrandIcon, EyeIcon, InviteIcon, TrashIcon } from './Icons';
+import { BackIcon, BrandIcon, EyeIcon, InviteIcon, TrashIcon } from './Icons';
 
 export function TopLeft() {
+  const roomId = useUI(s => s.roomId);
+  const notebook = useUI(s => s.notebook);
+
   const invite = async () => {
-    const link = inviteLink();
+    const link = inviteLink(roomId);
     try { await navigator.clipboard.writeText(link); showToast('Invite link copied! 🎉'); }
     catch { showToast(link, 5000); }
   };
+
+  const brand = (
+    <div className="brand card">
+      <span className="brand-mark"><BrandIcon /></span>
+      <span className="brand-name">Doodle<span>Board</span></span>
+    </div>
+  );
+
+  // A student's notebook: show its name and a way back to the app. No invite link: access is per person.
+  if (notebook) {
+    return (
+      <header className="top-left">
+        <a className="btn btn-back" href={notebook.backHref} title={notebook.backLabel}>
+          <BackIcon /><span>{notebook.backLabel}</span>
+        </a>
+        <div className="room card">
+          <span className="room-label">Zeszyt</span>
+          <span className="room-name">{notebook.title}</span>
+        </div>
+      </header>
+    );
+  }
+
   return (
     <header className="top-left">
-      <div className="brand card">
-        <span className="brand-mark"><BrandIcon /></span>
-        <span className="brand-name">Doodle<span>Board</span></span>
-      </div>
+      {brand}
       <div className="room card">
         <span className="room-label">Room</span>
         <span className="room-name">{roomId}</span>

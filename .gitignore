@@ -7,3 +7,4 @@ apps/sync/data/
 .env
 .env.local
 .DS_Store
+.data/

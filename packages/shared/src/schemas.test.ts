@@ -34,6 +34,24 @@ describe('ElementSchema', () => {
   });
 });
 
+describe('ImageSchema', () => {
+  const img = { id: 'i1', type: 'image', src: '/api/assets/b-abc/AAAAAAAAAAAAAAAAAAAAAA.webp', x: 0, y: 0, w: 100, h: 50, rot: 0 };
+
+  it('accepts an image stored in this app', () => {
+    expect(ElementSchema.safeParse(img).success).toBe(true);
+  });
+
+  it.each([
+    ['an outside URL', 'https://evil.example/x.png'],
+    ['a data URL', 'data:image/png;base64,AAAA'],
+    ['a javascript URL', 'javascript:alert(1)'],
+    ['an SVG', '/api/assets/b-abc/AAAAAAAAAAAAAAAAAAAAAA.svg'],
+    ['a path that walks up', '/api/assets/../AAAAAAAAAAAAAAAAAAAAAA.png'],
+  ])('rejects %s', (_, src) => {
+    expect(ElementSchema.safeParse({ ...img, src }).success).toBe(false);
+  });
+});
+
 describe('ClientMessageSchema', () => {
   it('cleans control characters out of display names', () => {
     const msg = ClientMessageSchema.parse({ t: 'join', room: 'sunny-otter-42', name: ' Ann\u0007 ', role: 'student', color: '#FF5A4E' });

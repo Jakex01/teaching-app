@@ -4,11 +4,15 @@
 import { nanoid } from 'nanoid';
 import { LINE_TYPES, SHAPE_TYPES, SIZES, TEXT_SIZES, TOOLS, toolDef, type SizeIndex, type ToolDef, type ToolId } from '../constants';
 import { setPref } from '../prefs';
-import { LIMITS, type BoardElement, type FollowCamera, type LineEl, type ServerMessage, type ShapeEl, type StrokeEl, type TextEl, type User } from '../protocol';
-import { roomId } from '../room';
+import { LIMITS, type BoardElement, type FollowCamera, type ImageEl, type LineEl, type ServerMessage, type ShapeEl, type StrokeEl, type TextEl, type User } from '../protocol';
 import { showToast, useUI, type Me } from '../store';
 import { Socket, defaultSyncUrl } from '../net/socket';
-import { bbox, clamp, clearMeasureCache, hit, translateEl, unionBox, wc, type Box } from './geometry';
+import {
+  bbox, clamp, clearMeasureCache, fromImageLocal, hit, imageCenter, imageCorners, normalizeAngle, rotate,
+  translateEl, unionBox, wc, type Box, type Pt,
+} from './geometry';
+import { getImage } from './images';
+import { imageFromTransfer, prepareImage } from './imageUpload';
 import { drawElement, drawGrid, type Camera } from './render';
 
 type HistoryEntry =
@@ -22,7 +26,17 @@ type Drag =
   | { kind: 'line'; el: LineEl; added: boolean }
   | { kind: 'erase'; removed: BoardElement[] }
   | { kind: 'move'; lx: number; ly: number; before: BoardElement[]; moved: boolean }
-  | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number; base: Set<string> };
+  | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number; base: Set<string> }
+  | { kind: 'resize'; before: ImageEl; corner: Corner; anchor: Pt }
+  | { kind: 'rotate'; before: ImageEl; startAngle: number };
+
+/** Image corners: top-left, top-right, bottom-right, bottom-left, as signs in the image's own frame. */
+type Corner = 0 | 1 | 2 | 3;
+const CORNER_SIGNS: Record<Corner, Pt> = { 0: [-1, -1], 1: [1, -1], 2: [1, 1], 3: [-1, 1] };
+const HANDLE_PX = 9;           // corner handle radius on screen
+const ROTATE_HANDLE_PX = 30;   // distance of the rotation handle above the image
+/** Elements with colour and size (everything except images). */
+type Styleable = Exclude<BoardElement, ImageEl>;
 
 const clone = <T>(o: T): T => structuredClone(o);
 const newId = () => nanoid(12);
@@ -65,6 +79,9 @@ class BoardEngine {
   private drawQueued = false;
 
   private socket: Socket | null = null;
+  /** Board ticket; also authorises image uploads. Open demo rooms have none. */
+  private ticket: string | null = null;
+  private uploadUrl = '/api/assets';
   private followingId: string | null = null;
   private followOptOut = false;
   private pendingMoves = new Set<string>();
@@ -99,8 +116,13 @@ class BoardEngine {
     on(canvas, 'pointercancel', e => this.onPointerUp(e));
     on(canvas, 'pointerleave', () => { this.pointerWorld = null; if (this.tool === 'eraser') this.requestDraw(); });
     on(canvas, 'dblclick', e => this.onDoubleClick(e));
+    // The right mouse button pans the board, so the browser's menu stays closed.
+    on(canvas, 'contextmenu', e => e.preventDefault());
     on(canvas, 'wheel', e => this.onWheel(e), { passive: false });
     on(window, 'keydown', e => this.onKeyDown(e));
+    on(window, 'paste', e => this.onPaste(e));
+    on(canvas, 'dragover', e => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+    on(canvas, 'drop', e => this.onDrop(e));
     on(window, 'keyup', e => { if (e.code === 'Space') { this.spaceDown = false; canvas.classList.remove('panning'); } });
     on(window, 'resize', () => this.resize());
     on(editor, 'input', () => this.autoSizeEditor());
@@ -127,12 +149,30 @@ class BoardEngine {
     this.editor = null;
   }
 
-  join(me: Omit<Me, 'id'>, syncUrl = defaultSyncUrl()) {
-    useUI.setState({ me: { ...me, id: null } });
+  /** Leaves the room (e.g. when navigating away from the board page). */
+  leave() {
+    this.socket?.close();
+    this.socket = null;
+    this.ticket = null;
+    this.elements.clear();
+    this.selection.clear();
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.followingId = null;
+    this.followOptOut = false;
+    useUI.setState({ me: null, users: [], cursors: {}, following: null, spotlightOn: false, canUndo: false, canRedo: false });
+  }
+
+  /** Joins a room. With a ticket, the server takes name and role from the ticket instead. */
+  join(me: Omit<Me, 'id'>, room: string, opts: { syncUrl?: string; ticket?: string } = {}) {
+    useUI.setState({ me: { ...me, id: null }, roomId: room });
+    this.ticket = opts.ticket ?? null;
     this.socket?.close();
     this.socket = new Socket(
-      syncUrl,
-      { t: 'join', room: roomId, name: me.name, role: me.role, color: me.color },
+      opts.syncUrl ?? defaultSyncUrl(),
+      opts.ticket
+        ? { t: 'join-ticket', ticket: opts.ticket }
+        : { t: 'join', room, name: me.name, role: me.role, color: me.color },
       msg => this.onMessage(msg),
       () => showToast('Connection lost — reconnecting…', 3000),
     );
@@ -267,9 +307,13 @@ class BoardEngine {
   }
 
   private syncSelection() {
-    let hasShape = false;
-    for (const id of this.selection) if (SHAPE_TYPES.has(this.elements.get(id)?.type ?? '')) hasShape = true;
-    useUI.setState({ selection: { count: this.selection.size, hasShape } });
+    let hasShape = false, styleable = false;
+    for (const id of this.selection) {
+      const type = this.elements.get(id)?.type ?? '';
+      if (SHAPE_TYPES.has(type)) hasShape = true;
+      if (type && type !== 'image') styleable = true;
+    }
+    useUI.setState({ selection: { count: this.selection.size, hasShape, styleable } });
   }
 
   // ---------- Coordinates ----------
@@ -312,7 +356,7 @@ class BoardEngine {
       if (this.editing?.el.id === el.id) continue;
       const b = bbox(el);
       if (b.x2 < v.x1 - 50 || b.x1 > v.x2 + 50 || b.y2 < v.y1 - 50 || b.y1 > v.y2 + 50) continue;
-      drawElement(ctx, el);
+      drawElement(ctx, el, () => this.requestDraw());
     }
 
     if (this.selection.size) {
@@ -326,7 +370,16 @@ class BoardEngine {
         if (!el) continue;
         const b = bbox(el);
         const pad = 6 / cam.z;
-        ctx.strokeRect(b.x1 - pad, b.y1 - pad, b.x2 - b.x1 + pad * 2, b.y2 - b.y1 + pad * 2);
+        if (el.type === 'image') {
+          // Follow the image's rotation instead of drawing its (larger) bounding box.
+          ctx.save();
+          ctx.translate(...imageCenter(el));
+          ctx.rotate(el.rot);
+          ctx.strokeRect(-el.w / 2 - pad, -el.h / 2 - pad, el.w + pad * 2, el.h + pad * 2);
+          ctx.restore();
+        } else {
+          ctx.strokeRect(b.x1 - pad, b.y1 - pad, b.x2 - b.x1 + pad * 2, b.y2 - b.y1 + pad * 2);
+        }
         all = unionBox(all, b);
       }
       if (all && this.selection.size > 1) {
@@ -337,6 +390,7 @@ class BoardEngine {
         ctx.strokeRect(all.x1 - pad, all.y1 - pad, all.x2 - all.x1 + pad * 2, all.y2 - all.y1 + pad * 2);
       }
       ctx.restore();
+      this.drawImageHandles(ctx);
     }
 
     const drag = this.drag;
@@ -382,6 +436,7 @@ class BoardEngine {
   private applyCursorClass() {
     if (!this.canvas) return;
     const id = this.tool;
+    this.canvas.style.cursor = ''; // drop any handle cursor from the select tool
     this.canvas.className =
       id === 'select' ? 'tool-select' :
       id === 'hand' ? 'tool-hand' :
@@ -413,12 +468,12 @@ class BoardEngine {
     this.applyStyleToSelection(el => { if (el.type === 'rect' || el.type === 'ellipse' || el.type === 'triangle') el.fill = fill; });
   };
 
-  private applyStyleToSelection(change: (el: BoardElement) => void) {
+  private applyStyleToSelection(change: (el: Styleable) => void) {
     if (this.tool !== 'select' || !this.selection.size) return;
     const before: BoardElement[] = [], after: BoardElement[] = [];
     for (const id of this.selection) {
       const el = this.elements.get(id);
-      if (!el) continue;
+      if (!el || el.type === 'image') continue; // images have no colour or line size
       before.push(clone(el));
       change(el);
       after.push(clone(el));
@@ -510,8 +565,8 @@ class BoardEngine {
     const tool = this.tool;
     const style = this.style;
 
-    // Pan: hand tool, space, middle mouse
-    if (tool === 'hand' || this.spaceDown || e.button === 1) {
+    // Pan: hand tool, space, middle or right mouse button
+    if (tool === 'hand' || this.spaceDown || e.button === 1 || e.button === 2) {
       this.drag = { kind: 'pan', lx: e.clientX, ly: e.clientY };
       canvas.classList.add('grabbing');
       return;
@@ -542,6 +597,18 @@ class BoardEngine {
       const fs = TEXT_SIZES[style.size];
       this.openTextEditor({ id: newId(), type: 'text', x: wc(w.x), y: wc(w.y - fs * 0.6), text: '', color: style.color, fs, by }, true);
     } else if (tool === 'select') {
+      const handle = this.imageHandleAt(w.x, w.y);
+      if (handle) {
+        const before = clone(handle.el);
+        if (handle.kind === 'rotate') {
+          const [cx, cy] = imageCenter(before);
+          this.drag = { kind: 'rotate', before, startAngle: Math.atan2(w.y - cy, w.x - cx) };
+        } else {
+          const [sx, sy] = CORNER_SIGNS[handle.corner];
+          this.drag = { kind: 'resize', before, corner: handle.corner, anchor: fromImageLocal(before, -sx * before.w / 2, -sy * before.h / 2) };
+        }
+        return;
+      }
       const target = this.topHit(w.x, w.y, 6 / this.cam.z);
       if (target) {
         if (e.shiftKey) {
@@ -580,7 +647,10 @@ class BoardEngine {
     if (this.me) this.sendCursor(wc(w.x), wc(w.y));
     if (this.tool === 'eraser') this.requestDraw();
     const drag = this.drag;
-    if (!drag) return;
+    if (!drag) {
+      if (this.tool === 'select' && this.canvas) this.canvas.style.cursor = this.handleCursor(w.x, w.y);
+      return;
+    }
 
     switch (drag.kind) {
       case 'pan':
@@ -644,6 +714,39 @@ class BoardEngine {
         this.requestDraw();
         break;
       }
+      case 'resize': {
+        const el = this.elements.get(drag.before.id);
+        if (el?.type !== 'image') break;
+        const b = drag.before;
+        const [sx, sy] = CORNER_SIGNS[drag.corner];
+        const [ax, ay] = drag.anchor;
+        // Pointer position relative to the fixed opposite corner, in the image's own frame.
+        const [lx, ly] = rotate(w.x - ax, w.y - ay, -b.rot);
+        const min = 12 / this.cam.z;
+        let nw = Math.max(lx * sx, min), nh = Math.max(ly * sy, min);
+        if (!e.shiftKey) {
+          // Keep proportions (hold Shift to stretch freely).
+          const k = Math.max(nw / b.w, nh / b.h, min / Math.min(b.w, b.h));
+          nw = b.w * k; nh = b.h * k;
+        }
+        const [ox, oy] = rotate(sx * nw / 2, sy * nh / 2, b.rot);
+        el.w = Math.max(1, wc(nw)); el.h = Math.max(1, wc(nh));
+        el.x = wc(ax + ox - el.w / 2); el.y = wc(ay + oy - el.h / 2);
+        this.requestDraw();
+        this.sendDraft(el);
+        break;
+      }
+      case 'rotate': {
+        const el = this.elements.get(drag.before.id);
+        if (el?.type !== 'image') break;
+        const [cx, cy] = imageCenter(drag.before);
+        let a = drag.before.rot + Math.atan2(w.y - cy, w.x - cx) - drag.startAngle;
+        if (e.shiftKey) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12); // Shift: steps of 15°
+        el.rot = normalizeAngle(a);
+        this.requestDraw();
+        this.sendDraft(el);
+        break;
+      }
       case 'marquee': {
         drag.cx = w.x; drag.cy = w.y;
         const m = { x1: Math.min(drag.sx, w.x), y1: Math.min(drag.sy, w.y), x2: Math.max(drag.sx, w.x), y2: Math.max(drag.sy, w.y) };
@@ -685,6 +788,14 @@ class BoardEngine {
       case 'erase':
         if (d.removed.length) this.pushHistory({ kind: 'delete', els: d.removed });
         break;
+      case 'resize': case 'rotate': {
+        const el = this.elements.get(d.before.id);
+        if (el) {
+          this.send([el]);
+          this.pushHistory({ kind: 'update', before: [d.before], after: [clone(el)] });
+        }
+        break;
+      }
       case 'move':
         if (d.moved) {
           const after = d.before.map(b => this.elements.get(b.id)).filter((el): el is BoardElement => !!el);
@@ -838,6 +949,129 @@ class BoardEngine {
     this.requestDraw();
     showToast('Board cleared — Ctrl+Z to bring it back');
   };
+
+  // ---------- Images: handles ----------
+  /** The one selected image, when exactly one image is selected in the select tool. */
+  private selectedImage(): ImageEl | null {
+    if (this.tool !== 'select' || this.selection.size !== 1) return null;
+    const el = this.elements.get([...this.selection][0]);
+    return el?.type === 'image' ? el : null;
+  }
+
+  private rotateHandlePos(el: ImageEl): Pt {
+    return fromImageLocal(el, 0, -el.h / 2 - ROTATE_HANDLE_PX / this.cam.z);
+  }
+
+  private imageHandleAt(x: number, y: number): { el: ImageEl; kind: 'rotate' } | { el: ImageEl; kind: 'resize'; corner: Corner } | null {
+    const el = this.selectedImage();
+    if (!el) return null;
+    const r = (HANDLE_PX + 3) / this.cam.z;
+    const [rx, ry] = this.rotateHandlePos(el);
+    if (Math.hypot(x - rx, y - ry) <= r) return { el, kind: 'rotate' };
+    const corners = imageCorners(el);
+    for (const c of [0, 1, 2, 3] as Corner[]) {
+      if (Math.hypot(x - corners[c][0], y - corners[c][1]) <= r) return { el, kind: 'resize', corner: c };
+    }
+    return null;
+  }
+
+  /** Mouse cursor over the handles: diagonal arrows that follow the image's rotation, or "grab" for rotating. */
+  private handleCursor(x: number, y: number) {
+    const h = this.imageHandleAt(x, y);
+    if (!h) return '';
+    if (h.kind === 'rotate') return 'grab';
+    const [sx, sy] = CORNER_SIGNS[h.corner];
+    const [dx, dy] = rotate(sx, sy, h.el.rot);
+    const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 180;
+    return deg < 22.5 || deg >= 157.5 ? 'ew-resize' : deg < 67.5 ? 'nwse-resize' : deg < 112.5 ? 'ns-resize' : 'nesw-resize';
+  }
+
+  private drawImageHandles(ctx: CanvasRenderingContext2D) {
+    const el = this.selectedImage();
+    if (!el) return;
+    const z = this.cam.z;
+    const [rx, ry] = this.rotateHandlePos(el);
+    const [tx, ty] = fromImageLocal(el, 0, -el.h / 2);
+    ctx.save();
+    ctx.lineWidth = 2 / z;
+    ctx.strokeStyle = '#1E1B3A';
+    // Stem + round rotation handle
+    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(rx, ry); ctx.stroke();
+    ctx.fillStyle = '#FFC93C';
+    ctx.beginPath(); ctx.arc(rx, ry, HANDLE_PX / z, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // Square corner handles, turned with the image
+    ctx.fillStyle = '#FFFFFF';
+    const half = (HANDLE_PX - 2) / z;
+    for (const [cx, cy] of imageCorners(el)) {
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(el.rot);
+      ctx.fillRect(-half, -half, half * 2, half * 2);
+      ctx.strokeRect(-half, -half, half * 2, half * 2);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // ---------- Images: paste & drop ----------
+  private onPaste(e: ClipboardEvent) {
+    const target = e.target as HTMLElement | null;
+    if (!this.me || this.editing || target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+    const file = imageFromTransfer(e.clipboardData);
+    if (!file) return;
+    e.preventDefault();
+    const at = this.pointerWorld ?? this.toWorld(innerWidth / 2, innerHeight / 2);
+    void this.insertImage(file, at);
+  }
+
+  private onDrop(e: DragEvent) {
+    const file = imageFromTransfer(e.dataTransfer);
+    if (!file || !this.me) return;
+    e.preventDefault();
+    void this.insertImage(file, this.toWorld(e.clientX, e.clientY));
+  }
+
+  /** Uploads an image and places it centred on `at`, scaled to fit comfortably on screen. */
+  private async insertImage(file: File, at: { x: number; y: number }) {
+    if (!this.ticket) {
+      showToast('Obrazy można wklejać w zeszytach uczniów.', 3000);
+      return;
+    }
+    showToast('Wgrywam obraz…', 15000);
+    try {
+      const { blob, width, height } = await prepareImage(file);
+      const res = await fetch(this.uploadUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': blob.type, 'X-Board-Ticket': this.ticket },
+        body: blob,
+        credentials: 'same-origin',
+      });
+      const data: { src?: unknown; error?: unknown } = await res.json().catch(() => ({}));
+      if (!res.ok || typeof data.src !== 'string') {
+        showToast(typeof data.error === 'string' ? data.error : 'Nie udało się wgrać obrazu.', 3500);
+        return;
+      }
+      getImage(data.src, () => this.requestDraw()); // start loading right away
+
+      const fit = Math.min(1, (innerWidth * 0.5) / this.cam.z / width, (innerHeight * 0.5) / this.cam.z / height);
+      const w = Math.max(1, wc(width * fit)), h = Math.max(1, wc(height * fit));
+      const el: ImageEl = {
+        id: newId(), type: 'image', src: data.src,
+        x: wc(at.x - w / 2), y: wc(at.y - h / 2), w, h, rot: 0,
+        by: this.me?.id ?? undefined,
+      };
+      this.addEls([el]);
+      this.pushHistory({ kind: 'add', els: [clone(el)] });
+      // Like Miro: the new image is selected, ready to move, resize or rotate.
+      this.setTool('select');
+      this.selection = new Set([el.id]);
+      this.syncSelection();
+      this.requestDraw();
+      showToast('Obraz dodany 🖼️');
+    } catch {
+      showToast('Nie udało się odczytać tego obrazu.', 3500);
+    }
+  }
 
   // ---------- Keyboard ----------
   private onKeyDown(e: KeyboardEvent) {

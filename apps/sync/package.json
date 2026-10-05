@@ -13,7 +13,7 @@
     "@teaching/db": "*",
     "@teaching/shared": "*",
     "tsx": "^4.23.15",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

@@ -8,3 +8,8 @@ apps/sync/data/
 .env.local
 .DS_Store
 .data/
+.zap-tmp/
+.zap/out/
+
+# Editors
+.idea/

@@ -3,16 +3,17 @@
 
 import { nanoid } from 'nanoid';
 import { LINE_TYPES, SHAPE_TYPES, SIZES, TEXT_SIZES, TOOLS, toolDef, type SizeIndex, type ToolDef, type ToolId } from '../constants';
-import { setPref } from '../prefs';
-import { LIMITS, type BoardElement, type FollowCamera, type ImageEl, type LineEl, type ServerMessage, type ShapeEl, type StrokeEl, type TextEl, type User } from '../protocol';
+import { getView, setPref, setView } from '../prefs';
+import { LIMITS, type BoardElement, type FollowCamera, type ImageEl, type LineEl, type ServerMessage, type SectionEl, type ShapeEl, type StrokeEl, type TaskCardEl, type TextEl, type User } from '../protocol';
 import { showToast, useUI, type Me } from '../store';
 import { Socket, defaultSyncUrl } from '../net/socket';
 import {
-  bbox, clamp, clearMeasureCache, fromImageLocal, hit, imageCenter, imageCorners, normalizeAngle, rotate,
+  CARD, SECTION, bbox, clamp, clearMeasureCache, hintLayout, solutionArea, fromImageLocal, hit, imageCenter, imageCorners, normalizeAngle, rotate,
   translateEl, unionBox, wc, type Box, type Pt,
 } from './geometry';
 import { getImage } from './images';
-import { imageFromTransfer, prepareImage } from './imageUpload';
+import { imageFromTransfer, pdfFromTransfer, prepareImage } from './imageUpload';
+import type { PdfImport } from './pdf';
 import { drawElement, drawGrid, type Camera } from './render';
 
 type HistoryEntry =
@@ -28,7 +29,8 @@ type Drag =
   | { kind: 'move'; lx: number; ly: number; before: BoardElement[]; moved: boolean }
   | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number; base: Set<string> }
   | { kind: 'resize'; before: ImageEl; corner: Corner; anchor: Pt }
-  | { kind: 'rotate'; before: ImageEl; startAngle: number };
+  | { kind: 'rotate'; before: ImageEl; startAngle: number }
+  | { kind: 'sectionResize'; before: SectionEl };
 
 /** Image corners: top-left, top-right, bottom-right, bottom-left, as signs in the image's own frame. */
 type Corner = 0 | 1 | 2 | 3;
@@ -40,6 +42,48 @@ type Styleable = Exclude<BoardElement, ImageEl>;
 
 const clone = <T>(o: T): T => structuredClone(o);
 const newId = () => nanoid(12);
+
+/** Where a PDF goes: a new section (named after the file), an existing one, or free space. */
+export type PdfTarget = { kind: 'new'; title: string } | { kind: 'section'; id: string } | { kind: 'none' };
+
+/** A stroke point; a pen (not a mouse or finger) also records its pressure, for nicer ink. */
+const penPoint = (x: number, y: number, e: PointerEvent): StrokeEl['pts'][number] =>
+  e.pointerType === 'pen' && e.pressure > 0 ? [wc(x), wc(y), Math.round(e.pressure * 100) / 100] : [wc(x), wc(y)];
+
+// Task cards (PDF worksheets, pasted tasks), in board units; 1 unit = 1 PDF point.
+const CARD_ROW_GAP = 48;
+const SOLUTION_MIN_WIDTH = 440;
+const SOLUTION_MIN_HEIGHT = 360;
+const SOLUTION_MAX_HEIGHT = 1100;
+/** Free room kept below the lowest writing in a solution area; it grows when you get closer than this. */
+const SOLUTION_GROW_ROOM = 160;
+const SOLUTION_GROW_ROOM_X = 120;
+const SOLUTION_MAX_CARD_WIDTH = 6000;
+/** Room kept under the task for the hint button. */
+const HINT_ROOM = 56;
+/** Screen pixels taken by the sections panel on the left; views of a section start right of it. */
+const SIDE_PANEL = 270;
+const SECTION_MIN_W = 600;
+const SECTION_MIN_H = 400;
+/** New sections are big: room for several task cards and notes. */
+const SECTION_W = 2400;
+const SECTION_H = 1600;
+/** Free room kept under (and beside) the lowest thing in a section; it grows when you get closer. */
+const SECTION_ROOM = 240;
+const SECTION_COLORS = ['#3D8BFF', '#22C1A0', '#8B5CF6', '#FF9F1C', '#FF6FB5'] as const;
+const CARD_COLORS = ['#FFC93C', '#22C1A0', '#3D8BFF', '#8B5CF6', '#FF6FB5', '#FF9F1C'] as const;
+
+/** A card for a task image of size w×h placed at (x, y): the image goes in its left part. */
+function taskCard(x: number, y: number, w: number, h: number, label: string, color: string, solutionHeight: number, by?: string): { card: TaskCardEl; imgX: number; imgY: number } {
+  const split = CARD.pad + w + CARD.gap;
+  const solW = Math.max(w, SOLUTION_MIN_WIDTH);
+  const bodyH = Math.max(h, solutionHeight);
+  return {
+    card: { id: newId(), type: 'task', color, label, by, x: wc(x), y: wc(y), w: wc(split + solW + CARD.pad), h: wc(CARD.header + bodyH + CARD.pad + HINT_ROOM), split: wc(split), taskH: wc(h) },
+    imgX: wc(x + CARD.pad),
+    imgY: wc(y + CARD.header),
+  };
+}
 
 function throttle<A extends unknown[]>(fn: (...args: A) => void, ms: number) {
   let last = 0;
@@ -65,6 +109,10 @@ class BoardEngine {
 
   private elements = new Map<string, BoardElement>(); // Map order = draw order
   private cam: Camera = { x: 0, y: 0, z: 1 };
+  /** The board whose view is remembered (see saveView). */
+  private viewRoom: string | null = null;
+  /** A section to add once the board has loaded ("add it there" when making a new board). */
+  private pendingSection: string | null = null;
   private dpr = 1;
   private selection = new Set<string>();
   private undoStack: HistoryEntry[] = [];
@@ -81,7 +129,10 @@ class BoardEngine {
   private socket: Socket | null = null;
   /** Board ticket; also authorises image uploads. Open demo rooms have none. */
   private ticket: string | null = null;
+  /** A PDF that has been read and waits for the teacher's choice in the import dialog. */
+  private pdfJob: PdfImport | null = null;
   private uploadUrl = '/api/assets';
+  private hintsUrl = '/api/hints';
   private followingId: string | null = null;
   private followOptOut = false;
   private pendingMoves = new Set<string>();
@@ -121,6 +172,9 @@ class BoardEngine {
     on(canvas, 'wheel', e => this.onWheel(e), { passive: false });
     on(window, 'keydown', e => this.onKeyDown(e));
     on(window, 'paste', e => this.onPaste(e));
+    const onPageHide = () => this.saveView();
+    window.addEventListener('pagehide', onPageHide);
+    this.cleanup.push(() => window.removeEventListener('pagehide', onPageHide));
     on(canvas, 'dragover', e => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
     on(canvas, 'drop', e => this.onDrop(e));
     on(window, 'keyup', e => { if (e.code === 'Space') { this.spaceDown = false; canvas.classList.remove('panning'); } });
@@ -151,6 +205,7 @@ class BoardEngine {
 
   /** Leaves the room (e.g. when navigating away from the board page). */
   leave() {
+    this.saveView();
     this.socket?.close();
     this.socket = null;
     this.ticket = null;
@@ -164,8 +219,16 @@ class BoardEngine {
   }
 
   /** Joins a room. With a ticket, the server takes name and role from the ticket instead. */
-  join(me: Omit<Me, 'id'>, room: string, opts: { syncUrl?: string; ticket?: string } = {}) {
+  join(me: Omit<Me, 'id'>, room: string, opts: { syncUrl?: string; ticket?: string; newSection?: string } = {}) {
+    this.pendingSection = opts.newSection?.trim() || null;
     useUI.setState({ me: { ...me, id: null }, roomId: room });
+    // Open the board where you left it last time (on this device).
+    this.viewRoom = room;
+    const view = getView(room);
+    if (view) {
+      this.cam = { z: view.z, x: view.cx - innerWidth / 2 / view.z, y: view.cy - innerHeight / 2 / view.z };
+      this.onCameraChange();
+    }
     this.ticket = opts.ticket ?? null;
     this.socket?.close();
     this.socket = new Socket(
@@ -191,6 +254,13 @@ class BoardEngine {
         this.setUsers(msg.users);
         this.syncSelection();
         this.requestDraw();
+        if (this.pendingSection) {
+          const title = this.pendingSection;
+          this.pendingSection = null;
+          this.addSection(title);
+          // Not again after a reload.
+          history.replaceState(null, '', location.pathname);
+        }
         break;
       }
       case 'presence':
@@ -313,7 +383,9 @@ class BoardEngine {
       if (SHAPE_TYPES.has(type)) hasShape = true;
       if (type && type !== 'image') styleable = true;
     }
-    useUI.setState({ selection: { count: this.selection.size, hasShape, styleable } });
+    const only = this.selection.size === 1 ? this.elements.get([...this.selection][0]) : undefined;
+    const oneImage = only?.type === 'image' && !this.cardUnder(bbox(only));
+    useUI.setState({ selection: { count: this.selection.size, hasShape, styleable, oneImage } });
   }
 
   // ---------- Coordinates ----------
@@ -352,11 +424,16 @@ class BoardEngine {
     ctx.setTransform(dpr * cam.z, 0, 0, dpr * cam.z, -cam.x * cam.z * dpr, -cam.y * cam.z * dpr);
     // Skip elements that are off screen
     const v = { x1: cam.x, y1: cam.y, x2: cam.x + innerWidth / cam.z, y2: cam.y + innerHeight / cam.z };
-    for (const el of this.elements.values()) {
-      if (this.editing?.el.id === el.id) continue;
-      const b = bbox(el);
-      if (b.x2 < v.x1 - 50 || b.x1 > v.x2 + 50 || b.y2 < v.y1 - 50 || b.y1 > v.y2 + 50) continue;
-      drawElement(ctx, el, () => this.requestDraw());
+    // Sections and task cards are backgrounds: drawn first (sections under cards), under everything else.
+    const layer = (el: BoardElement) => (el.type === 'section' ? 0 : el.type === 'task' ? 1 : 2);
+    for (const drawLayer of [0, 1, 2]) {
+      for (const el of this.elements.values()) {
+        if (layer(el) !== drawLayer) continue;
+        if (this.editing?.el.id === el.id) continue;
+        const b = bbox(el);
+        if (b.x2 < v.x1 - 50 || b.x1 > v.x2 + 50 || b.y2 < v.y1 - 50 || b.y1 > v.y2 + 50) continue;
+        drawElement(ctx, el, () => this.requestDraw());
+      }
     }
 
     if (this.selection.size) {
@@ -391,6 +468,7 @@ class BoardEngine {
       }
       ctx.restore();
       this.drawImageHandles(ctx);
+      this.drawSectionHandle(ctx);
     }
 
     const drag = this.drag;
@@ -417,6 +495,8 @@ class BoardEngine {
       ctx.fill(); ctx.stroke();
       ctx.restore();
     }
+
+    this.syncSections();
 
     // Let React know about the camera (zoom label, remote cursors).
     const s = useUI.getState().cam;
@@ -457,7 +537,7 @@ class BoardEngine {
     this.applyStyleToSelection(el => {
       if (el.type === 'text') el.fs = TEXT_SIZES[i];
       else if (el.type === 'stroke') el.size = SIZES[i] * (el.hl ? 3 : 1);
-      else el.size = SIZES[i];
+      else if (el.type !== 'task' && el.type !== 'section') el.size = SIZES[i]; // cards and sections have a colour but no line size
     });
   };
 
@@ -540,6 +620,7 @@ class BoardEngine {
       this.addEls([el]);
       this.pushHistory({ kind: 'update', before: [before], after: [clone(el)] });
     }
+    this.growCards([el]);
     this.requestDraw();
   }
 
@@ -573,12 +654,16 @@ class BoardEngine {
     }
     if (e.button !== 0) return;
 
+    // The "Podpowiedź" button on a task card works with any tool.
+    const hintCard = this.hintButtonAt(w.x, w.y);
+    if (hintCard) { void this.onHintButton(hintCard); return; }
+
     const sizeW = SIZES[style.size];
     const by = this.me.id ?? undefined;
 
     if (tool === 'pen' || tool === 'highlighter') {
       const hl = tool === 'highlighter';
-      const el: StrokeEl = { id: newId(), type: 'stroke', pts: [[wc(w.x), wc(w.y)]], color: hl ? style.hlColor : style.color, size: hl ? sizeW * 3 : sizeW, hl, by };
+      const el: StrokeEl = { id: newId(), type: 'stroke', pts: [penPoint(w.x, w.y, e)], color: hl ? style.hlColor : style.color, size: hl ? sizeW * 3 : sizeW, hl, by };
       this.addEls([el]);
       this.drag = { kind: 'stroke', el };
     } else if (SHAPE_TYPES.has(tool)) {
@@ -597,6 +682,8 @@ class BoardEngine {
       const fs = TEXT_SIZES[style.size];
       this.openTextEditor({ id: newId(), type: 'text', x: wc(w.x), y: wc(w.y - fs * 0.6), text: '', color: style.color, fs, by }, true);
     } else if (tool === 'select') {
+      const sectionHandle = this.sectionHandleAt(w.x, w.y);
+      if (sectionHandle) { this.drag = { kind: 'sectionResize', before: clone(sectionHandle) }; return; }
       const handle = this.imageHandleAt(w.x, w.y);
       if (handle) {
         const before = clone(handle.el);
@@ -618,6 +705,8 @@ class BoardEngine {
           this.selection = new Set([target.id]);
         }
         const before = [...this.selection].map(id => this.elements.get(id)).filter((el): el is BoardElement => !!el).map(clone);
+        // Sections and task cards carry what's on them (tasks, written solutions), like frames.
+        for (const el of this.cardContents(before)) before.push(clone(el));
         this.drag = { kind: 'move', lx: w.x, ly: w.y, before, moved: false };
       } else {
         if (!e.shiftKey) this.selection.clear();
@@ -668,7 +757,7 @@ class BoardEngine {
           const p = this.toWorld(ev.clientX, ev.clientY);
           const prev = pts[pts.length - 1];
           if (Math.hypot(p.x - prev[0], p.y - prev[1]) * this.cam.z < 1.5) continue;
-          pts.push([wc(p.x), wc(p.y)]);
+          pts.push(penPoint(p.x, p.y, ev));
         }
         if (pts.length !== before) { this.requestDraw(); this.sendDraft(drag.el); }
         break;
@@ -711,6 +800,15 @@ class BoardEngine {
           translateEl(el, dx, dy);
           this.queueMove(el.id);
         }
+        this.requestDraw();
+        break;
+      }
+      case 'sectionResize': {
+        const el = this.elements.get(drag.before.id);
+        if (el?.type !== 'section') break;
+        el.w = wc(Math.max(SECTION_MIN_W, w.x - el.x));
+        el.h = wc(Math.max(SECTION_MIN_H, w.y - el.y));
+        this.sendDraft(el);
         this.requestDraw();
         break;
       }
@@ -781,14 +879,15 @@ class BoardEngine {
       case 'stroke':
         this.send([d.el]);
         this.pushHistory({ kind: 'add', els: [clone(d.el)] });
+        this.growCards([d.el]);
         break;
       case 'shape': case 'line':
-        if (d.added) { this.send([d.el]); this.pushHistory({ kind: 'add', els: [clone(d.el)] }); }
+        if (d.added) { this.send([d.el]); this.pushHistory({ kind: 'add', els: [clone(d.el)] }); this.growCards([d.el]); }
         break;
       case 'erase':
         if (d.removed.length) this.pushHistory({ kind: 'delete', els: d.removed });
         break;
-      case 'resize': case 'rotate': {
+      case 'sectionResize': case 'resize': case 'rotate': {
         const el = this.elements.get(d.before.id);
         if (el) {
           this.send([el]);
@@ -801,6 +900,7 @@ class BoardEngine {
           const after = d.before.map(b => this.elements.get(b.id)).filter((el): el is BoardElement => !!el);
           this.send(after);
           this.pushHistory({ kind: 'update', before: d.before, after: after.map(clone) });
+          this.growCards(after);
         }
         break;
     }
@@ -884,7 +984,16 @@ class BoardEngine {
     this.animateCam({ z, x: (b.x1 + b.x2) / 2 - innerWidth / 2 / z, y: (b.y1 + b.y2) / 2 - innerHeight / 2 / z });
   };
 
+  /** Remembers where you're looking on this board, for the next time it's opened. */
+  private saveView() {
+    if (!this.viewRoom) return;
+    const { x, y, z } = this.cam;
+    setView(this.viewRoom, { cx: x + innerWidth / 2 / z, cy: y + innerHeight / 2 / z, z });
+  }
+  private saveViewSoon = throttle(() => this.saveView(), 500);
+
   private onCameraChange() {
+    this.saveViewSoon();
     this.requestDraw();
     this.positionEditor();
     if (useUI.getState().spotlightOn) this.broadcastCam();
@@ -977,6 +1086,7 @@ class BoardEngine {
 
   /** Mouse cursor over the handles: diagonal arrows that follow the image's rotation, or "grab" for rotating. */
   private handleCursor(x: number, y: number) {
+    if (this.sectionHandleAt(x, y)) return 'nwse-resize';
     const h = this.imageHandleAt(x, y);
     if (!h) return '';
     if (h.kind === 'rotate') return 'grab';
@@ -984,6 +1094,32 @@ class BoardEngine {
     const [dx, dy] = rotate(sx, sy, h.el.rot);
     const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 180;
     return deg < 22.5 || deg >= 157.5 ? 'ew-resize' : deg < 67.5 ? 'nwse-resize' : deg < 112.5 ? 'ns-resize' : 'nesw-resize';
+  }
+
+  /** The one selected section's bottom-right corner, for resizing it by hand. */
+  private sectionHandleAt(x: number, y: number): SectionEl | null {
+    if (this.tool !== 'select' || this.selection.size !== 1) return null;
+    const el = this.elements.get([...this.selection][0]);
+    if (el?.type !== 'section') return null;
+    const r = 16 / this.cam.z;
+    return Math.abs(x - (el.x + el.w)) <= r && Math.abs(y - (el.y + el.h)) <= r ? el : null;
+  }
+
+  private drawSectionHandle(ctx: CanvasRenderingContext2D) {
+    if (this.tool !== 'select' || this.selection.size !== 1) return;
+    const el = this.elements.get([...this.selection][0]);
+    if (el?.type !== 'section') return;
+    const s = 16 / this.cam.z;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.strokeStyle = '#3D8BFF';
+    ctx.lineWidth = 2.5 / this.cam.z;
+    ctx.beginPath();
+    ctx.rect(el.x + el.w - s / 2, el.y + el.h - s / 2, s, s);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawImageHandles(ctx: CanvasRenderingContext2D) {
@@ -1025,6 +1161,12 @@ class BoardEngine {
   }
 
   private onDrop(e: DragEvent) {
+    const pdf = pdfFromTransfer(e.dataTransfer);
+    if (pdf && this.me) {
+      e.preventDefault();
+      void this.openPdf(pdf);
+      return;
+    }
     const file = imageFromTransfer(e.dataTransfer);
     if (!file || !this.me) return;
     e.preventDefault();
@@ -1038,40 +1180,522 @@ class BoardEngine {
       return;
     }
     showToast('Wgrywam obraz…', 15000);
+    let prepared: Awaited<ReturnType<typeof prepareImage>>;
     try {
-      const { blob, width, height } = await prepareImage(file);
-      const res = await fetch(this.uploadUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': blob.type, 'X-Board-Ticket': this.ticket },
-        body: blob,
-        credentials: 'same-origin',
-      });
-      const data: { src?: unknown; error?: unknown } = await res.json().catch(() => ({}));
-      if (!res.ok || typeof data.src !== 'string') {
-        showToast(typeof data.error === 'string' ? data.error : 'Nie udało się wgrać obrazu.', 3500);
-        return;
-      }
-      getImage(data.src, () => this.requestDraw()); // start loading right away
+      prepared = await prepareImage(file);
+    } catch {
+      showToast('Nie udało się odczytać tego obrazu.', 3500);
+      return;
+    }
+    try {
+      const { width, height } = prepared;
+      const src = await this.upload(prepared.blob);
 
       const fit = Math.min(1, (innerWidth * 0.5) / this.cam.z / width, (innerHeight * 0.5) / this.cam.z / height);
       const w = Math.max(1, wc(width * fit)), h = Math.max(1, wc(height * fit));
       const el: ImageEl = {
-        id: newId(), type: 'image', src: data.src,
+        id: newId(), type: 'image', src,
         x: wc(at.x - w / 2), y: wc(at.y - h / 2), w, h, rot: 0,
         by: this.me?.id ?? undefined,
       };
       this.addEls([el]);
       this.pushHistory({ kind: 'add', els: [clone(el)] });
+      // A screenshot of a task (text on a light background) goes straight onto a task card.
+      // Separate undo step, so Ctrl+Z keeps the image and drops only the card.
+      if (prepared.document && !this.cardUnder(bbox(el))) {
+        const card = this.makeTaskCard(el);
+        this.growCards([card]);
+        this.offerSection([card.id, el.id]);
+        showToast('Wygląda na zadanie: dodano miejsce na rozwiązanie ✏️ (Ctrl+Z zostawi sam obraz)', 4500);
+        return;
+      }
+      this.growCards([el]);
+      this.offerSection([el.id]);
       // Like Miro: the new image is selected, ready to move, resize or rotate.
       this.setTool('select');
       this.selection = new Set([el.id]);
       this.syncSelection();
       this.requestDraw();
       showToast('Obraz dodany 🖼️');
-    } catch {
-      showToast('Nie udało się odczytać tego obrazu.', 3500);
+    } catch (e) {
+      showToast((e as Error).message, 3500);
     }
   }
+
+  /** Uploads a prepared image and returns its address. Throws an Error with a message for the person. */
+  private async upload(blob: Blob): Promise<string> {
+    const res = await fetch(this.uploadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type, 'X-Board-Ticket': this.ticket ?? '' },
+      body: blob,
+      credentials: 'same-origin',
+    }).catch(() => null);
+    const data: { src?: unknown; error?: unknown } = res ? await res.json().catch(() => ({})) : {};
+    if (!res?.ok || typeof data.src !== 'string') {
+      throw new Error(typeof data.error === 'string' ? data.error : 'Nie udało się wgrać obrazu.');
+    }
+    getImage(data.src, () => this.requestDraw()); // start loading right away
+    return data.src;
+  }
+
+  // ---------- Task cards ----------
+  /** The card a box lies on (mostly inside), if any. */
+  private cardUnder(b: Box): TaskCardEl | null {
+    for (const el of this.elements.values()) {
+      if (el.type !== 'task') continue;
+      const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2;
+      if (cx >= el.x && cx <= el.x + el.w && cy >= el.y && cy <= el.y + el.h) return el;
+    }
+    return null;
+  }
+
+  /** Elements lying inside the given task cards or sections (not already in the list). */
+  private cardContents(els: BoardElement[]): BoardElement[] {
+    const cards = els.filter((el): el is TaskCardEl => el.type === 'task');
+    const sections = els.filter((el): el is SectionEl => el.type === 'section');
+    if (!cards.length && !sections.length) return [];
+    const taken = new Set(els.map(el => el.id));
+    const out: BoardElement[] = [];
+    for (const el of this.elements.values()) {
+      if (taken.has(el.id) || el.type === 'section') continue;
+      const b = bbox(el);
+      const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2;
+      const onCard = el.type !== 'task' && cards.some(c => b.x1 >= c.x - 4 && b.x2 <= c.x + c.w + 4 && b.y1 >= c.y - 4 && b.y2 <= c.y + c.h + 4);
+      const inSection = sections.some(s => cx >= s.x && cx <= s.x + s.w && cy >= s.y && cy <= s.y + s.h);
+      if (onCard || inSection) out.push(el);
+    }
+    return out;
+  }
+
+  /** The section an element lies in (by its centre), if any. */
+  private sectionAt(b: Box): SectionEl | null {
+    const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2;
+    for (const el of this.elements.values()) {
+      if (el.type === 'section' && cx >= el.x && cx <= el.x + el.w && cy >= el.y && cy <= el.y + el.h) return el;
+    }
+    return null;
+  }
+
+  /**
+   * Writing that gets close to the bottom or right edge of a solution area makes the card bigger, and what's
+   * below it (in its column) or beside it (in its row) moves away by as much, so cards never overlap. Not part of undo: undoing the
+   * writing leaves the extra room, which does no harm.
+   */
+  private growCards(changed: BoardElement[]) {
+    const updates = new Map<string, BoardElement>();
+    for (const el of changed) {
+      if (el.type === 'task') continue;
+      const b = bbox(el);
+      for (const card of this.elements.values()) {
+        if (card.type !== 'task') continue;
+        const area = solutionArea(card);
+        // Writing that starts in the solution area (or just past its edge).
+        const startsInside = b.x1 >= area.x1 - 20 && b.x1 <= area.x2 + 40 && b.y1 >= area.y1 - 20 && b.y1 <= area.y2 + 40;
+        if (!startsInside) continue;
+
+        // Downwards: everything below the card in its column moves down.
+        const needDown = b.y2 + SOLUTION_GROW_ROOM - area.y2;
+        if (needDown > 0) this.growCardDown(card, wc(Math.max(needDown, 120)), updates, el.id);
+
+        // Sideways: everything to the right of the card in its row moves right.
+        const needRight = b.x2 + SOLUTION_GROW_ROOM_X - area.x2;
+        if (needRight > 0 && card.w < SOLUTION_MAX_CARD_WIDTH) {
+          const oldRight = card.x + card.w;
+          const delta = wc(Math.min(Math.max(needRight, 160), SOLUTION_MAX_CARD_WIDTH - card.w));
+          for (const other of this.elements.values()) {
+            if (other.id === card.id || other.id === el.id) continue;
+            const ob = bbox(other);
+            if (ob.x1 >= oldRight - 2 && ob.y2 > card.y && ob.y1 < card.y + card.h) {
+              translateEl(other, delta, 0);
+              updates.set(other.id, other);
+            }
+          }
+          card.w = wc(card.w + delta);
+          updates.set(card.id, card);
+        }
+      }
+    }
+    // Sections grow too: anything that starts in a section and gets near its bottom or right edge.
+    for (const el of changed) {
+      if (el.type === 'section') continue;
+      const b = bbox(el);
+      const section = this.sectionAt({ x1: b.x1, y1: b.y1, x2: b.x1, y2: b.y1 });
+      if (!section) continue;
+      if (b.y2 + SECTION_ROOM > section.y + section.h) this.growSectionTo(section, b.y2 + SECTION_ROOM - SECTION.pad, updates);
+      if (b.x2 + SECTION_ROOM > section.x + section.w) this.widenSectionTo(section, b.x2 + SECTION_ROOM, updates);
+    }
+    if (updates.size) {
+      this.send([...updates.values()]);
+      this.requestDraw();
+    }
+  }
+
+  /** Makes a section reach right to `right`; what's beside it (in its rows) moves right. */
+  private widenSectionTo(section: SectionEl, right: number, updates: Map<string, BoardElement>) {
+    const delta = wc(right - (section.x + section.w));
+    if (delta <= 0) return;
+    const oldRight = section.x + section.w;
+    for (const other of this.elements.values()) {
+      if (other.id === section.id || updates.has(other.id)) continue;
+      const ob = bbox(other);
+      if (ob.x1 >= oldRight - 2 && ob.y2 > section.y && ob.y1 < section.y + section.h) {
+        translateEl(other, delta, 0);
+        updates.set(other.id, other);
+      }
+    }
+    section.w = wc(section.w + delta);
+    updates.set(section.id, section);
+  }
+
+  // ---------- Hints on task cards ----------
+  private hintsLoading = new Set<string>();
+
+  private hintButtonAt(x: number, y: number): TaskCardEl | null {
+    for (const el of this.elements.values()) {
+      if (el.type !== 'task') continue;
+      const b = hintLayout(el).button;
+      if (b && x >= b.x1 && x <= b.x2 && y >= b.y1 && y <= b.y2) return el;
+    }
+    return null;
+  }
+
+  /** The task image on a card: the topmost image in its left part. */
+  private cardImage(card: TaskCardEl): ImageEl | null {
+    let best: ImageEl | null = null;
+    for (const el of this.cardContents([card])) {
+      if (el.type !== 'image' || el.x > card.x + card.split) continue;
+      if (!best || el.y < best.y) best = el;
+    }
+    return best;
+  }
+
+  /** Shows the next hint; the first click asks the server (AI) to prepare them. */
+  private async onHintButton(card: TaskCardEl) {
+    if (card.hints?.length) { this.showNextHint(card.id); return; }
+    if (!this.ticket) { showToast('Podpowiedzi działają w zeszytach uczniów.', 3000); return; }
+    if (this.hintsLoading.has(card.id)) return;
+    const img = this.cardImage(card);
+    if (!img) { showToast('Na tej karcie nie ma obrazu zadania.', 3000); return; }
+
+    this.hintsLoading.add(card.id);
+    showToast('Przygotowuję podpowiedzi… 💡', 30000);
+    try {
+      const res = await fetch(this.hintsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Board-Ticket': this.ticket },
+        body: JSON.stringify({ src: img.src }),
+        credentials: 'same-origin',
+      }).catch(() => null);
+      const data: { hints?: unknown; error?: unknown } = res ? await res.json().catch(() => ({})) : {};
+      const hints = Array.isArray(data.hints) ? data.hints.filter((h): h is string => typeof h === 'string').slice(0, LIMITS.hints) : [];
+      if (!res?.ok || !hints.length) {
+        showToast(typeof data.error === 'string' ? data.error : 'Nie udało się przygotować podpowiedzi.', 4000);
+        return;
+      }
+      const current = this.elements.get(card.id);
+      if (current?.type !== 'task') return;
+      current.hints = hints.map(h => h.slice(0, LIMITS.hintText));
+      current.shown = 0;
+      // Cards made before hints existed don't know where the task ends.
+      current.taskH ??= wc(Math.max(0, bbox(img).y2 - (current.y + CARD.header)));
+      this.showNextHint(current.id);
+      showToast('💡 Podpowiedź gotowa');
+    } finally {
+      this.hintsLoading.delete(card.id);
+    }
+  }
+
+  private showNextHint(id: string) {
+    const card = this.elements.get(id);
+    if (card?.type !== 'task' || !card.hints?.length) return;
+    card.shown = Math.min(card.hints.length, (card.shown ?? 0) + 1);
+    const updates = new Map<string, BoardElement>([[card.id, card]]);
+    // Make the card tall enough for the hints (what's below moves down).
+    const needed = hintLayout(card).bottom + CARD.pad - (card.y + card.h);
+    if (needed > 0) this.growCardDown(card, wc(needed + 24), updates);
+    this.send([...updates.values()]);
+    this.requestDraw();
+  }
+
+  /** Makes a card taller; everything below it in its column moves down by as much. */
+  private growCardDown(card: TaskCardEl, delta: number, updates: Map<string, BoardElement>, except?: string) {
+    const oldBottom = card.y + card.h;
+    for (const other of this.elements.values()) {
+      if (other.id === card.id || other.id === except) continue;
+      const ob = bbox(other);
+      if (ob.y1 >= oldBottom - 2 && ob.x2 > card.x && ob.x1 < card.x + card.w) {
+        translateEl(other, 0, delta);
+        updates.set(other.id, other);
+      }
+    }
+    card.h = wc(card.h + delta);
+    updates.set(card.id, card);
+    // The section holding the card grows with it (what's below it already moved down above).
+    const section = this.sectionAt(bbox(card));
+    if (section && section.y + section.h >= oldBottom - 2) {
+      section.h = wc(section.h + delta);
+      updates.set(section.id, section);
+    }
+  }
+
+  /** Makes a section reach down to `bottom` (plus padding); everything below it in its column moves down. */
+  private growSectionTo(section: SectionEl, bottom: number, updates: Map<string, BoardElement>) {
+    const delta = wc(bottom + SECTION.pad - (section.y + section.h));
+    if (delta <= 0) return;
+    const oldBottom = section.y + section.h;
+    for (const other of this.elements.values()) {
+      if (other.id === section.id || updates.has(other.id)) continue;
+      const ob = bbox(other);
+      if (ob.y1 >= oldBottom - 2 && ob.x2 > section.x && ob.x1 < section.x + section.w) {
+        translateEl(other, 0, delta);
+        updates.set(other.id, other);
+      }
+    }
+    section.h = wc(section.h + delta);
+    updates.set(section.id, section);
+  }
+
+  // ---------- Sections ----------
+  private sectionsKey = '';
+
+  /** Tells React the list of sections (for the side panel), when it changes. */
+  private syncSections() {
+    const list = [...this.elements.values()]
+      .filter((el): el is SectionEl => el.type === 'section')
+      .sort((a, b) => a.y - b.y || a.x - b.x)
+      .map(s => ({ id: s.id, title: s.title, color: s.color }));
+    const key = JSON.stringify(list);
+    if (key !== this.sectionsKey) { this.sectionsKey = key; useUI.setState({ sections: list }); }
+  }
+
+  /** Where a new section goes: under everything on the board, lined up with the sections above. */
+  private newSectionSpot() {
+    let content: Box | null = null;
+    let left: number | null = null;
+    for (const el of this.elements.values()) {
+      content = unionBox(content, bbox(el));
+      if (el.type === 'section') left = left === null ? el.x : Math.min(left, el.x);
+    }
+    if (!content) return this.toWorld(Math.min(80, innerWidth * 0.06), 110);
+    return { x: wc(left ?? content.x1), y: wc(content.y2 + 160) };
+  }
+
+  private makeSection(title: string, at: { x: number; y: number }, w = SECTION_W, h = SECTION_H): SectionEl {
+    const count = [...this.elements.values()].filter(el => el.type === 'section').length;
+    return {
+      id: newId(), type: 'section', title: title.trim().slice(0, 80) || 'Sekcja', by: this.me?.id ?? undefined,
+      color: SECTION_COLORS[count % SECTION_COLORS.length], x: wc(at.x), y: wc(at.y), w, h,
+    };
+  }
+
+  /** A new, empty section at the bottom of the board; the view moves to it. */
+  addSection = (title: string) => {
+    if (!this.me) return;
+    const section = this.makeSection(title, this.newSectionSpot());
+    this.addEls([section]);
+    this.pushHistory({ kind: 'add', els: [clone(section)] });
+    this.goToSection(section.id);
+    showToast(`Sekcja „${section.title}” dodana 📁`);
+  };
+
+  renameSection = (id: string, title: string) => {
+    const el = this.elements.get(id);
+    const name = title.trim().slice(0, 80);
+    if (el?.type !== 'section' || !name || name === el.title) return;
+    const before = clone(el);
+    el.title = name;
+    this.addEls([el]);
+    this.pushHistory({ kind: 'update', before: [before], after: [clone(el)] });
+  };
+
+  /** Moves the view to a section's top, fitting its width. */
+  goToSection = (id: string) => {
+    const el = this.elements.get(id);
+    if (el?.type !== 'section') return;
+    this.stopFollowing();
+    const z = clamp(Math.min(1, (innerWidth - SIDE_PANEL - 60) / el.w), 0.2, 1);
+    this.animateCam({ z, x: el.x - SIDE_PANEL / z, y: el.y - 100 / z });
+  };
+
+  /** A pasted task (screenshot, photo): puts the selected image on a task card with room for the solution. */
+  addSolutionSpace = () => {
+    const [id] = this.selection;
+    const img = this.selection.size === 1 && id ? this.elements.get(id) : undefined;
+    if (img?.type !== 'image' || !this.me) return;
+    this.makeTaskCard(img);
+    showToast('Gotowe: pisz rozwiązanie w białym polu ✏️');
+  };
+
+  /** Puts a task card around an image already on the board (numbered after the cards already there). */
+  private makeTaskCard(img: ImageEl): TaskCardEl {
+    const b = bbox(img);
+    const count = [...this.elements.values()].filter(el => el.type === 'task').length;
+    const { card } = taskCard(b.x1 - CARD.pad, b.y1 - CARD.header, b.x2 - b.x1, b.y2 - b.y1,
+      `Zadanie ${count + 1}`, CARD_COLORS[count % CARD_COLORS.length], SOLUTION_MIN_HEIGHT, this.me?.id ?? undefined);
+    this.addEls([card]);
+    this.pushHistory({ kind: 'add', els: [clone(card)] });
+    this.selection.clear();
+    this.syncSelection();
+    this.setTool('pen'); // ready to write the solution
+    return card;
+  }
+
+  // ---------- Putting a pasted task into a section ----------
+  private placedKey = 0;
+
+  /** Shows "Wstaw do sekcji" for what was just pasted (only when the board has sections). */
+  private offerSection(ids: string[]) {
+    if (![...this.elements.values()].some(el => el.type === 'section')) return;
+    useUI.setState({ placed: { ids, key: ++this.placedKey } });
+  }
+
+  dismissPlaced = () => useUI.setState({ placed: null });
+
+  /** Moves elements (a task with its card) into a section, under what's already there; the section grows to fit. */
+  moveIntoSection = (ids: string[], sectionId: string) => {
+    const section = this.elements.get(sectionId);
+    if (section?.type !== 'section') return;
+    const moving = ids.map(id => this.elements.get(id)).filter((el): el is BoardElement => !!el);
+    if (!moving.length) return;
+    const all = [...moving, ...this.cardContents(moving)];
+    const movingIds = new Set(all.map(el => el.id));
+
+    let box: Box | null = null;
+    for (const el of all) box = unionBox(box, bbox(el));
+    if (!box) return;
+    let lowest = section.y + SECTION.header + 32 - CARD_ROW_GAP;
+    for (const el of this.elements.values()) {
+      if (el.id === section.id || movingIds.has(el.id) || this.sectionAt(bbox(el))?.id !== section.id) continue;
+      lowest = Math.max(lowest, bbox(el).y2);
+    }
+    const dx = section.x + SECTION.pad - box.x1;
+    const dy = lowest + CARD_ROW_GAP - box.y1;
+
+    const before = all.map(clone);
+    // Moved elements are in `updates` from the start, so making room doesn't push them.
+    const updates = new Map<string, BoardElement>(all.map(el => [el.id, el]));
+    this.growSectionTo(section, box.y2 + dy + SECTION_ROOM - SECTION.pad, updates);
+    this.widenSectionTo(section, box.x2 + dx + SECTION.pad, updates);
+    for (const el of all) translateEl(el, dx, dy);
+    this.send([...updates.values()]);
+    this.pushHistory({ kind: 'update', before, after: all.map(clone) });
+    useUI.setState({ placed: null });
+
+    const z = clamp(this.cam.z, 0.4, 1);
+    this.animateCam({ z, x: section.x - SIDE_PANEL / z, y: box.y1 + dy - 120 / z });
+    showToast(`Przeniesiono do sekcji „${section.title}” 📁`);
+  };
+
+  // ---------- PDF worksheets ----------
+  /** Reads a PDF and opens the import dialog. */
+  openPdf = async (file: File) => {
+    if (!this.ticket) {
+      showToast('PDF można wstawić w zeszycie ucznia.', 3000);
+      return;
+    }
+    this.cancelPdf();
+    useUI.setState({ pdf: { fileName: file.name, analysis: null, progress: 'Czytam PDF…' } });
+    try {
+      const { PdfImport } = await import('./pdf'); // loaded only when needed (pdf.js is big)
+      this.pdfJob = await PdfImport.open(file);
+      useUI.setState({ pdf: { fileName: file.name, analysis: this.pdfJob.analysis, progress: null } });
+    } catch (e) {
+      console.warn('PDF import failed:', e);
+      useUI.setState({ pdf: null });
+      showToast('Nie udało się odczytać tego PDF-a.', 3500);
+    }
+  };
+
+  cancelPdf = () => {
+    this.pdfJob?.close();
+    this.pdfJob = null;
+    useUI.setState({ pdf: null });
+  };
+
+  /**
+   * Places the PDF on the board: each task (or page) on the left, with a frame beside it for the solution.
+   * Everything is ordinary board elements, so it can be moved, resized or deleted, and one undo removes it all.
+   */
+  insertPdf = async (mode: 'tasks' | 'pages', target: PdfTarget = { kind: 'none' }) => {
+    const job = this.pdfJob;
+    const state = useUI.getState().pdf;
+    if (!job || !state || !this.me) return;
+    const setProgress = (progress: string) => useUI.setState({ pdf: { ...state, progress } });
+
+    try {
+      setProgress('Przygotowuję…');
+      const pieces = await job.pieces(mode, (done, total) => setProgress(`Przygotowuję ${done + 1} z ${total}…`));
+      if (!pieces.length) throw new Error('W tym PDF-ie nie ma nic do wstawienia.');
+
+      const by = this.me.id ?? undefined;
+      let section: SectionEl | null = null;
+      let start: { x: number; y: number };
+      if (target.kind === 'new') {
+        // A new section at the bottom of the board, named after the file.
+        const spot = this.newSectionSpot();
+        section = this.makeSection(target.title, spot);
+        start = { x: wc(spot.x + SECTION.pad), y: wc(spot.y + SECTION.header + 32) };
+      } else if (target.kind === 'section' && this.elements.get(target.id)?.type === 'section') {
+        // Into an existing section, under what's already in it.
+        section = this.elements.get(target.id) as SectionEl;
+        let lowest = section.y + SECTION.header + 32 - CARD_ROW_GAP;
+        for (const el of this.elements.values()) {
+          if (el.id === section.id || this.sectionAt(bbox(el))?.id !== section.id) continue;
+          lowest = Math.max(lowest, bbox(el).y2);
+        }
+        start = { x: wc(section.x + SECTION.pad), y: wc(lowest + CARD_ROW_GAP) };
+      } else {
+        // In free space: to the right of everything already on the board (or where you're looking, if it's empty).
+        let content: Box | null = null;
+        for (const el of this.elements.values()) content = unionBox(content, bbox(el));
+        start = content ? { x: wc(content.x2 + 160), y: wc(content.y1) } : this.toWorld(Math.min(120, innerWidth * 0.08), 110);
+      }
+      const els: BoardElement[] = [];
+      let y = start.y;
+      for (const [i, piece] of pieces.entries()) {
+        setProgress(`Wgrywam ${i + 1} z ${pieces.length}…`);
+        const blob = await new Promise<Blob>((resolve, reject) =>
+          piece.canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Nie udało się przygotować strony.'))), 'image/png'));
+        const prepared = await prepareImage(blob);
+        const src = await this.upload(prepared.blob);
+
+        const w = wc(piece.width), h = wc(piece.height);
+        // As much room as the exam sheet gave for the answer (within limits).
+        const solutionH = clamp(piece.answerSpace, SOLUTION_MIN_HEIGHT, SOLUTION_MAX_HEIGHT);
+        const { card, imgX, imgY } = taskCard(start.x, y, w, h, piece.label, CARD_COLORS[i % CARD_COLORS.length], solutionH, by);
+        els.push(card, { id: newId(), type: 'image', src, x: imgX, y: imgY, w, h, rot: 0, by });
+        y += card.h + CARD_ROW_GAP;
+      }
+
+      const bottom = y - CARD_ROW_GAP;
+      const widest = Math.max(...els.filter(el => el.type === 'task').map(el => (el as TaskCardEl).w));
+      if (section && target.kind === 'new') {
+        section.w = wc(Math.max(section.w, widest + SECTION.pad * 2));
+        section.h = wc(Math.max(section.h, bottom + SECTION_ROOM - section.y));
+        els.unshift(section);
+      } else if (section) {
+        // Make room first (what's below the section moves down), then add the tasks.
+        const updates = new Map<string, BoardElement>();
+        this.growSectionTo(section, bottom, updates);
+        if (section.w < widest + SECTION.pad * 2) { section.w = wc(widest + SECTION.pad * 2); updates.set(section.id, section); }
+        if (updates.size) this.send([...updates.values()]);
+      }
+
+      this.addEls(els);
+      this.pushHistory({ kind: 'add', els: els.map(clone) });
+      this.setTool('pen');
+      this.cancelPdf();
+      // Take the view to the first task (right of the sections panel).
+      const z = clamp(this.cam.z, 0.5, 1);
+      this.animateCam({ z, x: start.x - (section ? SIDE_PANEL : 60) / z, y: start.y - (section ? SECTION.header + 110 : 110) / z });
+      showToast(mode === 'tasks' ? `Wstawiono zadania: ${pieces.length} ✏️` : `Wstawiono strony: ${pieces.length} ✏️`, 2500);
+    } catch (e) {
+      console.warn('PDF insert failed:', e);
+      setProgress('');
+      useUI.setState({ pdf: { ...state, progress: null } });
+      showToast(e instanceof Error && e.message ? e.message : 'Nie udało się wstawić PDF-a.', 4000);
+    }
+  };
 
   // ---------- Keyboard ----------
   private onKeyDown(e: KeyboardEvent) {

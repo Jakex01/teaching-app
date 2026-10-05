@@ -9,7 +9,7 @@
     "packages/*"
   ],
   "scripts": {
-    "predev": "npm run db:migrate && npm run db:seed",
+    "predev": "npm run db:up && npm run db:migrate && npm run db:seed",
     "dev": "concurrently -k -n web,sync -c cyan,magenta \"npm run dev -w @teaching/web\" \"npm run dev -w @teaching/sync\"",
     "build": "npm run build -w @teaching/web",
     "start": "concurrently -k -n web,sync -c cyan,magenta \"npm start -w @teaching/web\" \"npm start -w @teaching/sync\"",
@@ -18,15 +18,35 @@
     "test:watch": "vitest",
     "db:generate": "npm run generate -w @teaching/db",
     "db:migrate": "npm run migrate -w @teaching/db",
-    "db:seed": "npm run seed -w @teaching/db"
+    "db:seed": "npm run seed -w @teaching/db",
+    "db:up": "docker compose up -d --wait db mailpit",
+    "db:down": "docker compose stop db",
+    "db:import-pglite": "npm run import-pglite -w @teaching/db",
+    "db:import-boards": "npm run import-json -w @teaching/sync",
+    "teacher:create": "npm run teacher:create -w @teaching/db --",
+    "lint": "eslint . --max-warnings=0",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "engines": {
     "node": ">=20.9"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@next/eslint-plugin-next": "^16.3.6",
     "@types/node": "^26.6.3",
     "concurrently": "^10.0.5",
+    "eslint": "^10.11.0",
+    "eslint-plugin-no-unsanitized": "^4.1.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-security": "^4.1.0",
+    "globals": "^17.12.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1",
     "vitest": "^5.0.2"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": ">=0.25.0"
+    }
   }
 }

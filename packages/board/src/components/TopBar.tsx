@@ -3,6 +3,7 @@ import { engine } from '../board/engine';
 import { inviteLink } from '../room';
 import { showToast, useUI } from '../store';
 import { BackIcon, BrandIcon, EyeIcon, InviteIcon, TrashIcon } from './Icons';
+import { PdfButton, SolutionSpaceButton } from './PdfImport';
 
 export function TopLeft() {
   const roomId = useUI(s => s.roomId);
@@ -103,8 +104,11 @@ function People() {
 
 export function TopRight() {
   const isTeacher = useUI(s => s.me?.role === 'teacher');
+  const inNotebook = useUI(s => !!s.notebook); // uploads need a notebook (open demo rooms have no storage)
   return (
     <aside className="top-right">
+      <SolutionSpaceButton />
+      {inNotebook && <PdfButton />}
       {isTeacher && <TeacherTools />}
       <People />
     </aside>

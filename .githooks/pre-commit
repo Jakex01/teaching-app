@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stops a commit that contains something that looks like a secret (password, key, token).
+# Uses gitleaks if installed (brew install gitleaks), otherwise Docker if it's running, otherwise skips.
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact --no-banner . || { echo "✋ gitleaks: w zmianach wygląda coś jak sekret. Usuń to przed commitem." >&2; exit 1; }
+elif docker info >/dev/null 2>&1; then
+  docker run --rm -v "$(pwd):/repo" -w /repo zricethezav/gitleaks:v8.30.1 git --pre-commit --staged --redact --no-banner /repo \
+    || { echo "✋ gitleaks: w zmianach wygląda coś jak sekret. Usuń to przed commitem." >&2; exit 1; }
+else
+  echo "(pominięto skan sekretów: zainstaluj gitleaks albo uruchom Docker)" >&2
+fi

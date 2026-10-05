@@ -1,8 +1,63 @@
 import { FONT } from '../constants';
-import { LIMITS, type BoardElement, type ImageEl, type ShapeEl, type TextEl } from '../protocol';
+import { LIMITS, type BoardElement, type ImageEl, type ShapeEl, type TaskCardEl, type TextEl } from '../protocol';
 
 export interface Box { x1: number; y1: number; x2: number; y2: number }
 export type Pt = [number, number];
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+// Task card layout and solution area are shared with the server (lists, copying unfinished tasks).
+export { CARD, solutionArea } from '../protocol';
+import { CARD } from '../protocol';
+
+/** Section layout, in board units: header band with the title, inner padding. */
+export const SECTION = { header: 72, pad: 40 } as const;
+
+/** Hints under the task, in the card's left part. */
+export const HINT = { fs: 16, line: 22, pad: 10, gap: 8, button: 36, font: '500 16px' } as const;
+
+export interface HintBox { x: number; y: number; w: number; h: number; n: number; lines: string[] }
+export interface HintLayout { boxes: HintBox[]; button: (Box & { label: string }) | null; bottom: number }
+
+/** Where the shown hints and the "Podpowiedź" button go on a card (shared by drawing, clicks and growing). */
+export function hintLayout(el: TaskCardEl): HintLayout {
+  const x = el.x + CARD.pad;
+  const w = Math.max(160, el.split - CARD.pad - CARD.gap);
+  const hints = el.hints ?? [];
+  const shown = Math.min(el.shown ?? 0, hints.length);
+  let y = el.taskH != null ? el.y + CARD.header + el.taskH + 14 : el.y + el.h - CARD.pad - HINT.button;
+
+  const boxes: HintBox[] = [];
+  for (let i = 0; i < shown; i++) {
+    const lines = wrapText(hints[i], w - HINT.pad * 2 - 30, `${HINT.font} ${FONT}`);
+    const h = lines.length * HINT.line + HINT.pad * 2;
+    boxes.push({ x, y, w, h, n: i + 1, lines });
+    y += h + HINT.gap;
+  }
+  let button: HintLayout['button'] = null;
+  if (!hints.length || shown < hints.length) {
+    const label = hints.length ? `💡 Podpowiedź ${shown + 1}/${hints.length}` : '💡 Podpowiedź';
+    button = { x1: x, y1: y, x2: x + Math.min(w, 220), y2: y + HINT.button, label };
+    y += HINT.button;
+  }
+  return { boxes, button, bottom: y };
+}
+
+/** Splits text into lines that fit `maxW` in the given font. */
+export function wrapText(text: string, maxW: number, font: string): string[] {
+  measureCtx ??= document.createElement('canvas').getContext('2d')!;
+  measureCtx.font = font;
+  const out: string[] = [];
+  for (const para of text.split('\n')) {
+    let line = '';
+    for (const word of para.split(/\s+/)) {
+      const next = line ? `${line} ${word}` : word;
+      if (line && measureCtx.measureText(next).width > maxW) { out.push(line); line = word; } else line = next;
+    }
+    out.push(line);
+  }
+  return out;
+}
 
 export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
@@ -13,7 +68,6 @@ export const unionBox = (a: Box | null, b: Box): Box =>
   a ? { x1: Math.min(a.x1, b.x1), y1: Math.min(a.y1, b.y1), x2: Math.max(a.x2, b.x2), y2: Math.max(a.y2, b.y2) } : { ...b };
 
 // ---------- Text measuring ----------
-let measureCtx: CanvasRenderingContext2D | null = null;
 const measureCache = new Map<string, { w: number; h: number }>();
 
 export function measureText(el: TextEl) {
@@ -121,6 +175,20 @@ export function hit(el: BoardElement, x: number, y: number, tol: number): boolea
       const [lx, ly] = toImageLocal(el, x, y);
       return Math.abs(lx) <= el.w / 2 + tol && Math.abs(ly) <= el.h / 2 + tol;
     }
+    case 'section': {
+      // Like a card: only the title band and the edge pick it, so everything inside stays easy to use.
+      const inside = x >= el.x - tol && x <= el.x + el.w + tol && y >= el.y - tol && y <= el.y + el.h + tol;
+      if (!inside) return false;
+      const r = 12 + tol;
+      return y <= el.y + SECTION.header || x <= el.x + r || x >= el.x + el.w - r || y >= el.y + el.h - r;
+    }
+    case 'task': {
+      // Only the header and the edge pick the card, so drawing and selecting inside it still works.
+      const inside = x >= el.x - tol && x <= el.x + el.w + tol && y >= el.y - tol && y <= el.y + el.h + tol;
+      if (!inside) return false;
+      const r = 10 + tol;
+      return y <= el.y + CARD.header || x <= el.x + r || x >= el.x + el.w - r || y >= el.y + el.h - r;
+    }
     case 'rect': case 'ellipse': case 'triangle': {
       const b = bbox(el);
       const inside = x >= b.x1 - tol && x <= b.x2 + tol && y >= b.y1 - tol && y <= b.y2 + tol;
@@ -143,7 +211,7 @@ export function hit(el: BoardElement, x: number, y: number, tol: number): boolea
 
 export function translateEl(el: BoardElement, dx: number, dy: number) {
   switch (el.type) {
-    case 'stroke': el.pts = el.pts.map(([x, y]) => [wc(x + dx), wc(y + dy)]); break;
+    case 'stroke': el.pts = el.pts.map(p => (p.length === 3 ? [wc(p[0] + dx), wc(p[1] + dy), p[2]] : [wc(p[0] + dx), wc(p[1] + dy)])); break;
     case 'line': case 'arrow':
       el.x1 = wc(el.x1 + dx); el.y1 = wc(el.y1 + dy); el.x2 = wc(el.x2 + dx); el.y2 = wc(el.y2 + dy);
       break;

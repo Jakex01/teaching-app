@@ -37,11 +37,12 @@ export function RemoteCursors() {
 
 export function Toast() {
   const toast = useUI(s => s.toast);
-  const [visible, setVisible] = useState(false);
+  // Hidden once its time is up; a new toast (new key) shows again.
+  const [hiddenKey, setHiddenKey] = useState<number | null>(null);
+  const visible = !!toast && hiddenKey !== toast.key;
   useEffect(() => {
     if (!toast) return;
-    setVisible(true);
-    const t = setTimeout(() => setVisible(false), toast.ms);
+    const t = setTimeout(() => setHiddenKey(toast.key), toast.ms);
     return () => clearTimeout(t);
   }, [toast]);
   return <div className={`toast${visible ? ' show' : ''}`} role="status" aria-live="polite">{toast?.msg}</div>;

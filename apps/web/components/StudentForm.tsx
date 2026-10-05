@@ -15,23 +15,25 @@ export interface StudentFormValues {
   color: string;
 }
 
-export function StudentForm({ action, initial, submitLabel }: {
+export function StudentForm({ action, initial, submitLabel, withInvite = false }: {
   action: (state: FormState, data: FormData) => Promise<FormState>;
   initial?: StudentFormValues;
   submitLabel: string;
+  /** New student: also ask for an e-mail to send the account invitation to. */
+  withInvite?: boolean;
 }) {
   const [state, formAction, pending] = useActionState(action, undefined);
   const [color, setColor] = useState(initial?.color ?? STUDENT_COLORS[0]);
-  const [saved, setSaved] = useState(false);
+  // Show "Zapisano" for a moment after a successful edit: hide it again once its result is old.
+  const [hiddenResult, setHiddenResult] = useState<FormState>(undefined);
+  const saved = !!state?.ok && hiddenResult !== state;
   const errors = state?.fieldErrors ?? {};
   // After a failed submit, show what was typed; otherwise the saved values.
   const v = (key: keyof StudentFormValues) => state?.values?.[key] ?? initial?.[key] ?? '';
 
-  // Show "Zapisano" for a moment after a successful edit.
   useEffect(() => {
     if (!state?.ok) return;
-    setSaved(true);
-    const t = setTimeout(() => setSaved(false), 2000);
+    const t = setTimeout(() => setHiddenResult(state), 2000);
     return () => clearTimeout(t);
   }, [state]);
 
@@ -61,6 +63,16 @@ export function StudentForm({ action, initial, submitLabel }: {
       <Field label="Notatki" error={errors.notes} hint="Widzisz je tylko Ty.">
         <Textarea name="notes" defaultValue={v('notes')} maxLength={2000} placeholder="Mocne strony, z czym ma problem, ustalenia z rodzicem…" />
       </Field>
+
+      {withInvite && (
+        <Field
+          label="E-mail ucznia lub rodzica"
+          error={errors.inviteEmail}
+          hint="Opcjonalnie. Wyślemy zaproszenie do założenia konta ucznia. Jeśli uczeń ma mniej niż 16 lat, podaj e-mail rodzica."
+        >
+          <Input type="email" name="inviteEmail" defaultValue={state?.values?.inviteEmail ?? ''} maxLength={254} inputMode="email" autoComplete="off" placeholder="uczen@przyklad.pl" />
+        </Field>
+      )}
 
       <fieldset>
         <legend className="mb-1.5 text-xs font-extrabold tracking-wider uppercase opacity-70">Kolor</legend>

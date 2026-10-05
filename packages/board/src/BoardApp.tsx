@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { engine } from './board/engine';
 import { JoinScreen } from './components/JoinScreen';
 import { RemoteCursors, Toast } from './components/Overlays';
+import { PdfDialog } from './components/PdfImport';
+import { PlaceInSection } from './components/PlaceInSection';
+import { SectionsNav } from './components/SectionsNav';
 import { Dock, History, StyleBubble, Zoom } from './components/Toolbar';
 import { FollowBanner, TopLeft, TopRight } from './components/TopBar';
 import type { Role } from './protocol';
@@ -12,6 +15,8 @@ import './styles.css';
 
 /** A student's notebook opened from the app: who you are was already decided by the server. */
 export interface BoardSession extends Notebook {
+  /** Add a section with this title once the board has loaded. */
+  newSection?: string;
   room: string;
   /** Signed by the web app, checked by the sync server. */
   ticket: string;
@@ -40,7 +45,7 @@ export function BoardApp({ syncUrl, session }: BoardAppProps) {
     });
     engine.attach(canvas.current!, editor.current!);
     if (session) {
-      engine.join({ name: session.name, role: session.role, color: session.color }, session.room, { syncUrl, ticket: session.ticket });
+      engine.join({ name: session.name, role: session.role, color: session.color }, session.room, { syncUrl, ticket: session.ticket, newSection: session.newSection });
     }
     return () => {
       engine.leave();
@@ -60,6 +65,7 @@ export function BoardApp({ syncUrl, session }: BoardAppProps) {
       <textarea id="text-editor" ref={editor} spellCheck={false} />
 
       <TopLeft />
+      <SectionsNav />
       <TopRight />
       <FollowBanner />
       <StyleBubble />
@@ -67,6 +73,8 @@ export function BoardApp({ syncUrl, session }: BoardAppProps) {
       <History />
       <Zoom />
       <Toast />
+      <PdfDialog />
+      <PlaceInSection />
 
       {joinVisible && <JoinScreen onJoin={onJoin} />}
     </div>

@@ -3,7 +3,8 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { PanelNav } from '@/components/PanelNav';
 import { Avatar } from '@/components/ui';
-import { BrandMark } from '@/components/icons';
+import { BrandMark, LogoutIcon } from '@/components/icons';
+import { logout } from '@/lib/auth-actions';
 import { requireTeacher } from '@/lib/session';
 
 export const metadata: Metadata = { title: { template: '%s · Doodle Board', default: 'Panel · Doodle Board' } };
@@ -23,12 +24,19 @@ export default async function PanelLayout({ children }: { children: ReactNode })
 
         <PanelNav />
 
-        <div className="mt-auto hidden items-center gap-2.5 rounded-2xl bg-paper p-2 lg:flex">
-          <Avatar name={teacher.displayName} color="#FFC93C" size="sm" />
-          <div className="min-w-0">
-            <p className="truncate font-extrabold">{teacher.displayName}</p>
-            <p className="text-xs font-bold opacity-50">Nauczyciel · tryb dev</p>
-          </div>
+        <div className="mt-auto hidden items-center gap-1 rounded-2xl bg-paper p-2 lg:flex">
+          <Link href="/panel/konto" title="Konto" className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl p-0.5 hover:bg-ink/5">
+            <Avatar name={teacher.displayName} color="#FFC93C" size="sm" />
+            <div className="min-w-0">
+              <p className="truncate font-extrabold">{teacher.displayName}</p>
+              <p className="truncate text-xs font-bold opacity-50">{teacher.email}</p>
+            </div>
+          </Link>
+          <form action={logout}>
+            <button type="submit" title="Wyloguj się" aria-label="Wyloguj się" className="grid size-9 place-items-center rounded-xl hover:bg-ink/10 [&_svg]:size-5">
+              <LogoutIcon />
+            </button>
+          </form>
         </div>
       </aside>
 

@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import type { LessonStatus } from '@teaching/db';
 import { setLessonStatus } from '@/lib/actions';
+import { openLessonBoard } from '@/lib/board-actions';
 import { fmtTime } from '@/lib/time';
-import { Avatar, Badge, Button, ExternalButton, LinkButton, cn } from './ui';
+import { Avatar, Badge, Button, ExternalButton, cn } from './ui';
 import { BoardIcon, CheckIcon, UndoIcon, VideoIcon, XIcon } from './icons';
 
 export interface LessonItemData {
@@ -21,7 +22,7 @@ const STATUS: Record<LessonStatus, { label: string; className: string }> = {
   cancelled: { label: 'Odwołana', className: 'bg-ink/10 border-ink/40' },
 };
 
-/** The teacher's view of a student's notebook-board. */
+/** Continue with the student's board used last. */
 export const boardHref = (studentId: string) => `/panel/zeszyt/${studentId}`;
 
 export function LessonItem({ lesson, tz, boardStudentId, highlight }: { lesson: LessonItemData; tz: string; boardStudentId?: string | null; highlight?: boolean }) {
@@ -54,7 +55,9 @@ export function LessonItem({ lesson, tz, boardStudentId, highlight }: { lesson: 
       <div className="ml-auto flex flex-wrap items-center gap-1.5">
         <Badge className={STATUS[lesson.status].className}>{STATUS[lesson.status].label}</Badge>
         {boardStudentId && !cancelled && (
-          <LinkButton href={boardHref(boardStudentId)} size="sm" variant="sun" title="Otwórz tablicę ucznia"><BoardIcon />Tablica</LinkButton>
+          <form action={openLessonBoard.bind(null, lesson.id)}>
+            <Button size="sm" variant="sun" title="Tablica tej lekcji (powstaje przy pierwszym otwarciu)"><BoardIcon />Tablica lekcji</Button>
+          </form>
         )}
         {lesson.videoUrl && lesson.status === 'scheduled' && (
           <ExternalButton href={lesson.videoUrl} size="sm" variant="sky" title="Dołącz do rozmowy wideo"><VideoIcon />Wideo</ExternalButton>

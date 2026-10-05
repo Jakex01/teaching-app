@@ -73,3 +73,31 @@ describe('ClientMessageSchema', () => {
     expect(ClientMessageSchema.safeParse({ t: 'hack' }).success).toBe(false);
   });
 });
+
+describe('task card', () => {
+  const card = { id: 'card1', type: 'task', color: '#FFC93C', x: 0, y: 0, w: 1000, h: 500, split: 520, label: 'Zadanie 3' };
+
+  it('accepts a valid card', () => {
+    expect(ElementSchema.safeParse(card).success).toBe(true);
+  });
+
+  it.each([
+    ['a too long label', { ...card, label: 'x'.repeat(41) }],
+    ['a negative split', { ...card, split: -1 }],
+    ['a named colour', { ...card, color: 'yellow' }],
+  ])('rejects %s', (_, value) => {
+    expect(ElementSchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe('stroke points', () => {
+  const stroke = { id: 's1', type: 'stroke', color: '#1E1B3A', size: 3, hl: false };
+
+  it('accepts points with and without pen pressure', () => {
+    expect(ElementSchema.safeParse({ ...stroke, pts: [[0, 0], [5, 5, 0.42]] }).success).toBe(true);
+  });
+
+  it('rejects pressure outside 0–1', () => {
+    expect(ElementSchema.safeParse({ ...stroke, pts: [[0, 0, 1.5]] }).success).toBe(false);
+  });
+});

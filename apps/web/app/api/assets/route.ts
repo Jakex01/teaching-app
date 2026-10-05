@@ -9,12 +9,12 @@ import { syncSecret } from '@/lib/secrets';
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 
-// At most 20 uploads per person per minute (per server process).
+// At most LIMITS.uploadsPerMinute uploads per person per minute (per server process).
 const recent = new Map<string, number[]>();
 function allowUpload(key: string) {
   const now = Date.now();
   const times = (recent.get(key) ?? []).filter(t => now - t < 60_000);
-  if (times.length >= 20) return false;
+  if (times.length >= LIMITS.uploadsPerMinute) return false;
   times.push(now);
   recent.set(key, times);
   if (recent.size > 5000) recent.clear();

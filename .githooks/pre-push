@@ -1,0 +1,11 @@
+#!/bin/sh
+# Changes reach main only through a pull request (where CI and the security checks run).
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "✋ Push prosto do main jest zablokowany. Pracuj na gałęzi i otwórz pull request:" >&2
+    echo "     git switch -c nazwa-zmiany && git push -u origin nazwa-zmiany" >&2
+    echo "   (Tylko w awarii: git push --no-verify)" >&2
+    exit 1
+  fi
+done
+exit 0

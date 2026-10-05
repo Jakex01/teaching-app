@@ -289,3 +289,45 @@
   .people-count { display: none; }
   .b3, .b4 { display: none; }
 }
+
+/* ---------- PDF import ---------- */
+.pdf-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(30, 27, 58, .35); }
+.pdf-dialog { width: min(480px, 100%); padding: 24px; border-radius: 22px; box-shadow: 8px 8px 0 var(--ink); animation: pop-in .35s var(--bounce); }
+.pdf-dialog h2 { margin: 0 0 6px; font-family: var(--font-fun); font-size: 26px; }
+.pdf-file { margin: 0 0 4px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdf-summary { margin: 0 0 14px; font-weight: 700; opacity: .65; }
+.pdf-status { font-weight: 700; opacity: .7; }
+.pdf-options { display: grid; gap: 10px; }
+.pdf-option { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: var(--border); border-radius: 16px; background: var(--paper); cursor: pointer; }
+.pdf-option:has(input:checked) { background: var(--sun); }
+.pdf-option.disabled { opacity: .5; cursor: not-allowed; }
+.pdf-option input { margin-top: 4px; accent-color: var(--tomato); }
+.pdf-option b { display: block; }
+.pdf-option small { display: block; margin-top: 2px; font-weight: 600; opacity: .7; }
+.pdf-actions { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 18px; }
+.pdf-actions .pdf-status { margin-right: auto; }
+.pdf-go { background: var(--tomato); color: var(--white); }
+.btn:disabled { opacity: .5; pointer-events: none; }
+.solution-pill { background: var(--sun); animation: pop-in .3s var(--bounce); }
+
+/* ---------- Sections panel ---------- */
+.sections { position: fixed; top: 76px; left: 16px; z-index: 9; width: 230px; max-height: calc(100vh - 220px); overflow: auto; padding: 8px; border-radius: 16px; }
+.sections-head { width: 100%; display: flex; justify-content: space-between; align-items: center; background: none; border: 0; font: inherit; font-weight: 800; font-size: 14px; padding: 4px 6px; cursor: pointer; color: var(--ink); }
+.sections-caret { opacity: .5; }
+.sections-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.sections-list li { display: flex; align-items: center; gap: 4px; border-left: 5px solid var(--sc); border-radius: 8px; background: var(--paper); }
+.sections-item { flex: 1; min-width: 0; text-align: left; background: none; border: 0; font: inherit; font-weight: 700; font-size: 13px; padding: 6px 8px; cursor: pointer; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sections-item:hover { text-decoration: underline; }
+.sections-edit { background: none; border: 0; cursor: pointer; opacity: .5; padding: 4px 6px; font-size: 13px; }
+.sections-edit:hover { opacity: 1; }
+.sections-list input, .sections-new input { width: 100%; font: inherit; font-size: 13px; font-weight: 700; padding: 5px 8px; border: 2px solid var(--ink); border-radius: 8px; }
+.sections-new { margin-top: 6px; }
+.sections-add { margin-top: 6px; width: 100%; background: var(--sun); border: 2px solid var(--ink); border-radius: 10px; font: inherit; font-weight: 800; font-size: 13px; padding: 5px; cursor: pointer; }
+@media (max-width: 700px) { .sections { top: auto; bottom: 150px; width: 180px; } }
+.pdf-target { margin: 0 0 14px; display: grid; gap: 6px; }
+.pdf-target label { font-weight: 800; font-size: 13px; }
+.pdf-target select, .pdf-target input { font: inherit; font-weight: 700; padding: 8px 10px; border: var(--border); border-radius: 12px; background: var(--white); }
+
+.place-bar { position: fixed; top: 76px; left: 50%; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 16px; font-weight: 800; font-size: 14px; animation: pop-in .3s var(--bounce); }
+.place-bar select { font: inherit; font-weight: 700; padding: 6px 10px; border: var(--border); border-radius: 10px; background: var(--white); max-width: 260px; }
+@media (max-width: 700px) { .place-bar { top: auto; bottom: 150px; flex-wrap: wrap; justify-content: center; } }

@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 import { COLORS, type SizeIndex, type ToolId } from './constants';
 import { getPref } from './prefs';
+import type { PdfAnalysis } from './board/pdf';
 import type { User } from './protocol';
 
 export interface Style {
@@ -35,7 +36,7 @@ interface UIState {
   users: User[];
   tool: ToolId;
   style: Style;
-  selection: { count: number; hasShape: boolean; styleable: boolean };
+  selection: { count: number; hasShape: boolean; styleable: boolean; oneImage: boolean };
   canUndo: boolean;
   canRedo: boolean;
   cam: { x: number; y: number; z: number };
@@ -43,6 +44,12 @@ interface UIState {
   spotlightOn: boolean;
   following: string | null; // name of the teacher being followed
   toast: { msg: string; ms: number; key: number } | null;
+  /** The PDF import dialog: null when closed. `progress` is shown while busy. */
+  pdf: { fileName: string; analysis: PdfAnalysis | null; progress: string | null } | null;
+  /** Sections of the board, top to bottom (the side panel). */
+  sections: { id: string; title: string; color: string }[];
+  /** Just pasted (an image, maybe with its task card): offer to move it into a section. */
+  placed: { ids: string[]; key: number } | null;
 }
 
 export const useUI = create<UIState>(() => ({
@@ -57,7 +64,7 @@ export const useUI = create<UIState>(() => ({
     size: getPref('size') ?? 1,
     fill: getPref('fill') ?? false,
   },
-  selection: { count: 0, hasShape: false, styleable: false },
+  selection: { count: 0, hasShape: false, styleable: false, oneImage: false },
   canUndo: false,
   canRedo: false,
   cam: { x: 0, y: 0, z: 1 },
@@ -65,6 +72,9 @@ export const useUI = create<UIState>(() => ({
   spotlightOn: false,
   following: null,
   toast: null,
+  pdf: null,
+  sections: [],
+  placed: null,
 }));
 
 let toastKey = 0;

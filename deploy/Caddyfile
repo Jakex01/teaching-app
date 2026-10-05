@@ -1,0 +1,14 @@
+# HTTPS certificates are fetched and renewed automatically (Let's Encrypt, ZeroSSL as fallback).
+# Caddy sets X-Forwarded-For to the real client address (a header sent by the client is not trusted),
+# which the app's rate limits rely on.
+
+{$APP_HOST} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy web:3000
+}
+
+{$SYNC_HOST} {
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy sync:3001
+}

@@ -1,0 +1,98 @@
+# Production on the Google Cloud VM (infra/terraform). Run through deploy.sh:
+#   Caddy (HTTPS, ports 80/443) → web (Next.js) and sync (WebSocket) → Postgres.
+# Only Caddy is reachable from outside; everything else talks on the internal network.
+# Secrets come from /opt/doodle/.env (never in the repo); see deploy/.env.example.
+
+name: doodle
+
+x-db-url: &db-url postgres://teaching:${DB_PASSWORD:?set DB_PASSWORD}@db:5432/teaching
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: teaching
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      POSTGRES_DB: teaching
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teaching -d teaching"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: apps/sync/Dockerfile
+    image: doodle-sync:local
+    command: ["node", "--import", "tsx", "packages/db/src/migrate.ts"]
+    environment:
+      DATABASE_URL: *db-url
+    depends_on:
+      db:
+        condition: service_healthy
+
+  sync:
+    image: doodle-sync:local  # built by the migrate service above
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: *db-url
+      SYNC_SECRET: ${SYNC_SECRET:?set SYNC_SECRET}
+      ALLOWED_ORIGINS: https://${APP_HOST:?set APP_HOST}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    image: doodle-web:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: *db-url
+      SYNC_SECRET: ${SYNC_SECRET:?set SYNC_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      APP_URL: https://${APP_HOST}
+      SYNC_PUBLIC_URL: wss://${SYNC_HOST:?set SYNC_HOST}/ws
+      SMTP_URL: ${SMTP_URL:?set SMTP_URL}
+      MAIL_FROM: ${MAIL_FROM:?set MAIL_FROM}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALLOW_GOOGLE_SIGNUP: ${ALLOW_GOOGLE_SIGNUP:-false}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+    volumes:
+      - assets:/app/apps/web/.data/assets
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2.11.6-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_HOST: ${APP_HOST}
+      SYNC_HOST: ${SYNC_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - sync
+
+volumes:
+  pgdata:
+  assets:
+  caddy_data:
+  caddy_config:

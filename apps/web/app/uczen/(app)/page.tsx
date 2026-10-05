@@ -1,25 +1,16 @@
 import Link from 'next/link';
 import { Badge, Card, EmptyState, ExternalButton, SectionTitle, cn } from '@/components/ui';
 import { BoardIcon, VideoIcon } from '@/components/icons';
-import { studentPastLessons, studentUpcomingLessons } from '@/lib/student-data';
+import { BoardList } from '@/components/BoardList';
+import { listBoards } from '@/lib/boards';
+import { studentHome } from '@/lib/student-data';
 import { requireStudent } from '@/lib/student-session';
 import { fmtDayLabel, fmtShortDate, fmtTime } from '@/lib/time';
-
-const SOON_MINUTES = 15;
 
 export default async function StudentHomePage() {
   const { student, teacher, board } = await requireStudent();
   const tz = teacher.timezone;
-  const [upcoming, past] = await Promise.all([
-    studentUpcomingLessons(student.id),
-    studentPastLessons(student.id),
-  ]);
-
-  const now = Date.now();
-  const next = upcoming.find(l => l.status === 'scheduled');
-  const rest = upcoming.filter(l => l.id !== next?.id);
-  const minutesToNext = next ? Math.round((next.startsAt.getTime() - now) / 60_000) : null;
-  const isLive = next ? next.startsAt.getTime() - SOON_MINUTES * 60_000 <= now && next.endsAt.getTime() > now : false;
+  const [{ next, rest, past, minutesToNext, isLive }, boardList] = await Promise.all([studentHome(student.id), listBoards(student.id)]);
 
   return (
     <>
@@ -40,8 +31,8 @@ export default async function StudentHomePage() {
               <BoardIcon />
             </span>
             <span>
-              <span className="block font-fun text-2xl font-bold">Mój zeszyt →</span>
-              <span className="block text-sm font-bold opacity-70">Wszystko z lekcji zostaje tutaj.</span>
+              <span className="block font-fun text-2xl font-bold">Kontynuuj →</span>
+              <span className="block truncate text-sm font-bold opacity-70">{boardList[0]?.title ?? 'Wszystko z lekcji zostaje tutaj.'}</span>
             </span>
           </Link>
         ) : (
@@ -80,6 +71,11 @@ export default async function StudentHomePage() {
           )}
         </Card>
       </div>
+
+      <section className="mb-8">
+        <SectionTitle>Moje tablice</SectionTitle>
+        <BoardList boards={boardList} hrefBase="/uczen/tablica/" tz={tz} />
+      </section>
 
       {rest.length > 0 && (
         <section className="mb-8">

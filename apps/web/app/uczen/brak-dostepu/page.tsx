@@ -1,18 +1,31 @@
+import Link from 'next/link';
+import { AuthCard } from '@/components/AuthCard';
+import { Button } from '@/components/ui';
+import { logout } from '@/lib/auth-actions';
+
 export const metadata = { title: 'Brak dostępu · Doodle Board' };
 
-export default async function NoAccessPage({ searchParams }: { searchParams: Promise<{ wylogowano?: string }> }) {
-  const { wylogowano } = await searchParams;
+export default async function NoAccessPage({ searchParams }: { searchParams: Promise<{ wylogowano?: string; konto?: string }> }) {
+  const { wylogowano, konto } = await searchParams;
+
+  if (konto) {
+    return (
+      <AuthCard title="Brak aktywnych lekcji" subtitle="Twoje konto nie jest teraz połączone z żadnym nauczycielem.">
+        <p className="mb-5 font-bold opacity-70">Jeśli to pomyłka, poproś nauczyciela o nowe zaproszenie e-mailem.</p>
+        <form action={logout}><Button type="submit">Wyloguj się</Button></form>
+      </AuthCard>
+    );
+  }
+
   return (
-    <main className="grid min-h-dvh place-items-center p-4">
-      <div className="w-full max-w-md -rotate-1 rounded-[26px] border-[2.5px] border-ink bg-white p-8 shadow-hard-lg">
-        <div className="mb-2 text-4xl">{wylogowano ? '👋' : '🔑'}</div>
-        <h1 className="mb-2 font-fun text-3xl font-bold">{wylogowano ? 'Do zobaczenia!' : 'Potrzebujesz swojego linku'}</h1>
-        <p className="font-bold opacity-70">
-          {wylogowano
-            ? 'Wylogowano. Żeby wrócić, otwórz ponownie link od nauczyciela.'
-            : 'Do swojego zeszytu wchodzisz przez osobisty link od nauczyciela. Jeśli link przestał działać, poproś o nowy.'}
-        </p>
-      </div>
-    </main>
+    <AuthCard
+      title={wylogowano ? 'Do zobaczenia! 👋' : 'Ten link nie działa 🔑'}
+      subtitle={wylogowano ? 'Wylogowano.' : 'Link wygasł albo nauczyciel wyłączył dostęp.'}
+    >
+      <p className="mb-5 font-bold opacity-70">
+        Masz konto ucznia? Zaloguj się e-mailem. Jeśli nie, poproś nauczyciela o zaproszenie albo nowy link.
+      </p>
+      <Link href="/logowanie" className="font-extrabold text-tomato underline">Przejdź do logowania →</Link>
+    </AuthCard>
   );
 }

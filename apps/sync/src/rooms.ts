@@ -1,12 +1,9 @@
-// Rooms live in memory while someone is connected and are saved to data/<room>.json.
-// (Replaced by Postgres + Yjs in stage C of the roadmap.)
+// Rooms live in memory while someone is connected. Every change is saved to Postgres (board_elements),
+// one row per element, at most ~1 second after it happens, even while people keep drawing.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { ElementSchema, roomId, type BoardElement } from '@teaching/shared';
+import { and, boardElements, closeDb, eq, getDb, inArray, sql } from '@teaching/db';
+import { ElementSchema, roomId as RoomIdSchema, type BoardElement, type User } from '@teaching/shared';
 import type { WebSocket } from 'ws';
-import type { User } from '@teaching/shared';
 
 export interface Client {
   id: string;
@@ -14,90 +11,164 @@ export interface Client {
   room: Room | null;
   user: User | null;
   alive: boolean;
+  /** Messages from this person are handled one after another. */
+  queue: Promise<void>;
 }
 
 export interface Room {
   id: string;
-  elements: Map<string, BoardElement>;
+  elements: Map<string, BoardElement>; // Map order = drawing order
+  positions: Map<string, number>;
+  nextPosition: number;
   clients: Set<Client>;
-  saveTimer: ReturnType<typeof setTimeout> | null;
-  dirty: boolean;
+  // Changes not yet written to the database:
+  dirty: Set<string>;
+  deleted: Set<string>;
+  cleared: boolean;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  flushing: Promise<void> | null;
 }
 
-const DATA_DIR = process.env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+const SAVE_DELAY_MS = 1000;
+const RETRY_DELAY_MS = 5000;
+const BATCH = 200;
 
 const rooms = new Map<string, Room>();
+const loading = new Map<string, Promise<Room>>();
 
-function fileFor(id: string) {
-  // roomId only allows [a-z0-9-], so the path can never leave DATA_DIR.
-  if (!roomId.safeParse(id).success) throw new Error('Invalid room id');
-  return path.join(DATA_DIR, id + '.json');
-}
+async function load(id: string): Promise<Room> {
+  if (!RoomIdSchema.safeParse(id).success) throw new Error('Invalid room id');
+  const rows = await getDb()
+    .select({ elementId: boardElements.elementId, position: boardElements.position, data: boardElements.data })
+    .from(boardElements)
+    .where(eq(boardElements.roomId, id))
+    .orderBy(boardElements.position);
 
-function load(id: string) {
-  const elements = new Map<string, BoardElement>();
-  const file = fileFor(id);
-  if (!fs.existsSync(file)) return elements;
-  try {
-    const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
-    let skipped = 0;
-    for (const item of Array.isArray(raw) ? raw : []) {
-      const parsed = ElementSchema.safeParse(item);
-      if (parsed.success) elements.set(parsed.data.id, parsed.data);
-      else skipped++;
-    }
-    if (skipped) console.warn(`Board ${id}: skipped ${skipped} invalid element(s)`);
-  } catch (e) {
-    console.warn('Could not load board', id, (e as Error).message);
+  const room: Room = {
+    id, elements: new Map(), positions: new Map(), nextPosition: 1, clients: new Set(),
+    dirty: new Set(), deleted: new Set(), cleared: false, flushTimer: null, flushing: null,
+  };
+  let skipped = 0;
+  for (const row of rows) {
+    const parsed = ElementSchema.safeParse(row.data);
+    if (!parsed.success) { skipped++; continue; }
+    room.elements.set(row.elementId, parsed.data);
+    room.positions.set(row.elementId, row.position);
+    room.nextPosition = Math.max(room.nextPosition, row.position + 1);
   }
-  return elements;
-}
-
-export function getRoom(id: string) {
-  let room = rooms.get(id);
-  if (!room) {
-    room = { id, elements: load(id), clients: new Set(), saveTimer: null, dirty: false };
-    rooms.set(id, room);
-  }
+  if (skipped) console.warn(`Board ${id}: skipped ${skipped} invalid element(s)`);
   return room;
 }
 
-function save(room: Room) {
-  if (room.saveTimer) clearTimeout(room.saveTimer);
-  room.saveTimer = null;
-  if (!room.dirty) return;
-  room.dirty = false;
-  const file = fileFor(room.id);
-  const tmp = `${file}.${process.pid}.tmp`;
-  // Write to a temp file first, then rename, so a crash never leaves half a board.
-  fs.writeFile(tmp, JSON.stringify([...room.elements.values()]), (err) => {
-    if (err) return console.warn('Could not save board', room.id, err.message);
-    fs.rename(tmp, file, (e) => { if (e) console.warn('Could not save board', room.id, e.message); });
-  });
-}
-
-export function scheduleSave(room: Room) {
-  room.dirty = true;
-  if (room.saveTimer) clearTimeout(room.saveTimer);
-  room.saveTimer = setTimeout(() => save(room), 800);
-}
-
-// Called when the last person leaves: save and free the memory.
-export function releaseIfEmpty(room: Room) {
-  if (room.clients.size) return;
-  save(room);
-  rooms.delete(room.id);
-}
-
-export function saveAll() {
-  for (const room of rooms.values()) {
-    if (!room.dirty) continue;
-    room.dirty = false;
-    try {
-      fs.writeFileSync(fileFor(room.id), JSON.stringify([...room.elements.values()]));
-    } catch (e) {
-      console.warn('Could not save board', room.id, (e as Error).message);
-    }
+/** The room, loaded from the database on first use. Parallel joins share one load. */
+export async function getRoom(id: string): Promise<Room> {
+  const existing = rooms.get(id);
+  if (existing) return existing;
+  let pending = loading.get(id);
+  if (!pending) {
+    pending = load(id).then(room => { rooms.set(id, room); return room; }).finally(() => loading.delete(id));
+    loading.set(id, pending);
   }
+  return pending;
+}
+
+// ---------- Changes ----------
+export function upsertElement(room: Room, el: BoardElement) {
+  if (!room.positions.has(el.id)) room.positions.set(el.id, room.nextPosition++);
+  room.elements.set(el.id, el);
+  room.deleted.delete(el.id);
+  room.dirty.add(el.id);
+  scheduleFlush(room);
+}
+
+export function deleteElement(room: Room, id: string) {
+  if (!room.elements.delete(id)) return;
+  room.positions.delete(id);
+  room.dirty.delete(id);
+  room.deleted.add(id);
+  scheduleFlush(room);
+}
+
+export function clearRoom(room: Room) {
+  room.elements.clear();
+  room.positions.clear();
+  room.dirty.clear();
+  room.deleted.clear();
+  room.cleared = true;
+  scheduleFlush(room);
+}
+
+// ---------- Saving ----------
+function scheduleFlush(room: Room, delay = SAVE_DELAY_MS) {
+  // Not reset by new changes: saving happens at most `delay` after the first unsaved change.
+  if (room.flushTimer) return;
+  room.flushTimer = setTimeout(() => { room.flushTimer = null; void flush(room); }, delay);
+}
+
+const hasChanges = (room: Room) => room.cleared || room.dirty.size > 0 || room.deleted.size > 0;
+
+/** Writes pending changes. Safe to call at any time; runs one save per room at a time. */
+export async function flush(room: Room): Promise<void> {
+  if (room.flushing) {
+    await room.flushing;
+    if (hasChanges(room)) return flush(room);
+    return;
+  }
+  if (room.flushTimer) { clearTimeout(room.flushTimer); room.flushTimer = null; }
+  if (!hasChanges(room)) return;
+
+  const cleared = room.cleared;
+  const deleted = [...room.deleted];
+  const dirty = [...room.dirty];
+  room.cleared = false;
+  room.deleted.clear();
+  room.dirty.clear();
+
+  room.flushing = (async () => {
+    try {
+      const now = new Date();
+      await getDb().transaction(async tx => {
+        if (cleared) await tx.delete(boardElements).where(eq(boardElements.roomId, room.id));
+        for (let i = 0; i < deleted.length; i += BATCH) {
+          await tx.delete(boardElements).where(and(
+            eq(boardElements.roomId, room.id),
+            inArray(boardElements.elementId, deleted.slice(i, i + BATCH)),
+          ));
+        }
+        const rows = dirty.flatMap(id => {
+          const el = room.elements.get(id);
+          const position = room.positions.get(id);
+          return el && position !== undefined ? [{ roomId: room.id, elementId: id, position, data: el, updatedAt: now }] : [];
+        });
+        for (let i = 0; i < rows.length; i += BATCH) {
+          await tx.insert(boardElements).values(rows.slice(i, i + BATCH)).onConflictDoUpdate({
+            target: [boardElements.roomId, boardElements.elementId],
+            set: { data: sql`excluded.data`, updatedAt: sql`excluded.updated_at` },
+          });
+        }
+      });
+    } catch (e) {
+      // Put the changes back (unless something newer replaced them) and try again later.
+      console.warn(`Could not save board ${room.id}, retrying:`, (e as Error).message);
+      if (cleared) room.cleared = true;
+      for (const id of deleted) if (!room.elements.has(id)) room.deleted.add(id);
+      for (const id of dirty) if (room.elements.has(id)) room.dirty.add(id);
+      scheduleFlush(room, RETRY_DELAY_MS);
+    }
+  })();
+
+  try { await room.flushing; } finally { room.flushing = null; }
+}
+
+/** Called when someone leaves: once the room is empty, save it and free the memory. */
+export async function releaseIfEmpty(room: Room) {
+  if (room.clients.size) return;
+  await flush(room);
+  if (!room.clients.size && !hasChanges(room) && rooms.get(room.id) === room) rooms.delete(room.id);
+}
+
+/** Saves every room and closes the database connection (server shutdown). */
+export async function saveAllAndClose() {
+  await Promise.all([...rooms.values()].map(room => flush(room)));
+  await closeDb();
 }

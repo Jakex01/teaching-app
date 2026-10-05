@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, asc, boards, desc, eq, getDb, gte, isNull, lessons, lt, sql, studentAccessLinks, students } from '@teaching/db';
+import { and, asc, boards, desc, eq, getDb, gt, gte, isNull, lessons, lt, sql, studentAccessLinks, studentInvitations, students, users } from '@teaching/db';
 
 // Every query takes the teacher's id and filters by it, so a teacher only ever sees their own data.
 
@@ -26,7 +26,7 @@ export async function lessonsBetween(teacherId: string, from: Date, to: Date) {
     .select(lessonWithStudent)
     .from(lessons)
     .innerJoin(students, eq(students.id, lessons.studentId))
-    .leftJoin(boards, eq(boards.studentId, students.id))
+    .leftJoin(boards, and(eq(boards.studentId, students.id), eq(boards.kind, 'notebook')))
     .where(and(eq(lessons.teacherId, teacherId), gte(lessons.startsAt, from), lt(lessons.startsAt, to)))
     .orderBy(asc(lessons.startsAt));
 }
@@ -36,7 +36,7 @@ export async function recentLessons(teacherId: string, before: Date, limit = 10)
     .select(lessonWithStudent)
     .from(lessons)
     .innerJoin(students, eq(students.id, lessons.studentId))
-    .leftJoin(boards, eq(boards.studentId, students.id))
+    .leftJoin(boards, and(eq(boards.studentId, students.id), eq(boards.kind, 'notebook')))
     .where(and(eq(lessons.teacherId, teacherId), lt(lessons.startsAt, before)))
     .orderBy(desc(lessons.startsAt))
     .limit(limit);
@@ -47,7 +47,7 @@ export async function listStudents(teacherId: string) {
   // Next scheduled lesson per student, computed in the same query.
   const nextLesson = sql<Date | null>`(
     select min(${lessons.startsAt}) from ${lessons}
-    where ${lessons.studentId} = ${students.id} and ${lessons.status} = 'scheduled' and ${lessons.startsAt} >= ${now}
+    where ${lessons.studentId} = ${students.id} and ${lessons.status} = 'scheduled' and ${lessons.startsAt} >= ${now.toISOString()}::timestamptz
   )`.mapWith(v => (v ? new Date(v) : null));
   const lessonCount = sql<number>`(select count(*) from ${lessons} where ${lessons.studentId} = ${students.id} and ${lessons.status} = 'done')`
     .mapWith(Number);
@@ -66,7 +66,7 @@ export async function listStudents(teacherId: string) {
       lessonCount,
     })
     .from(students)
-    .leftJoin(boards, eq(boards.studentId, students.id))
+    .leftJoin(boards, and(eq(boards.studentId, students.id), eq(boards.kind, 'notebook')))
     .where(and(eq(students.teacherId, teacherId), eq(students.status, 'active')))
     .orderBy(asc(students.firstName));
 }
@@ -75,7 +75,7 @@ export async function getStudent(teacherId: string, studentId: string) {
   const [row] = await getDb()
     .select({ student: students, roomId: boards.roomId })
     .from(students)
-    .leftJoin(boards, eq(boards.studentId, students.id))
+    .leftJoin(boards, and(eq(boards.studentId, students.id), eq(boards.kind, 'notebook')))
     .where(and(eq(students.id, studentId), eq(students.teacherId, teacherId)));
   if (!row) return null;
 
@@ -99,7 +99,23 @@ export async function getStudent(teacherId: string, studentId: string) {
     .orderBy(desc(studentAccessLinks.createdAt))
     .limit(1);
 
-  return { ...row.student, roomId: row.roomId, lessons: history, access: access ?? null };
+  // The student's own account, or else the invitation that is still waiting.
+  const [account] = row.student.userId
+    ? await getDb().select({ email: users.email, displayName: users.displayName, createdAt: users.createdAt }).from(users).where(eq(users.id, row.student.userId))
+    : [];
+  const [invitation] = account ? [] : await getDb()
+    .select({ email: studentInvitations.email, createdAt: studentInvitations.createdAt, expiresAt: studentInvitations.expiresAt })
+    .from(studentInvitations)
+    .where(and(
+      eq(studentInvitations.studentId, studentId),
+      isNull(studentInvitations.acceptedAt),
+      isNull(studentInvitations.revokedAt),
+      gt(studentInvitations.expiresAt, new Date()),
+    ))
+    .orderBy(desc(studentInvitations.createdAt))
+    .limit(1);
+
+  return { ...row.student, roomId: row.roomId, lessons: history, access: access ?? null, account: account ?? null, invitation: invitation ?? null };
 }
 
 export async function studentOptions(teacherId: string) {

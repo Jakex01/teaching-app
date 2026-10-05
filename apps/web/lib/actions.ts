@@ -2,7 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import { and, boards, eq, getDb, lessons, newRoomId, students } from '@teaching/db';
+import { and, boards, eq, getDb, lessons, newRoomId, normalizeEmail, students } from '@teaching/db';
+import { inviteEmailProblem, inviteStudent } from './invitations';
 import { requireTeacher } from './session';
 import { zonedDateTime } from './time';
 import { LessonInput, LessonStatusInput, StudentInput, Uuid, fieldErrors, type FormState } from './validation';
@@ -16,7 +17,12 @@ export async function createStudent(_: FormState, data: FormData): Promise<FormS
   const teacher = await requireTeacher();
   const values = formObject(data);
   const parsed = StudentInput.safeParse(values);
-  if (!parsed.success) return { fieldErrors: fieldErrors(parsed.error), values };
+  // Optional: invite the student (or a parent) by e-mail right away.
+  const inviteEmail = normalizeEmail(values.inviteEmail ?? '');
+  const inviteProblem = inviteEmail ? await inviteEmailProblem(teacher.id, inviteEmail) : null;
+  if (!parsed.success || inviteProblem) {
+    return { fieldErrors: { ...(parsed.success ? {} : fieldErrors(parsed.error)), ...(inviteProblem ? { inviteEmail: inviteProblem } : {}) }, values };
+  }
 
   const db = getDb();
   const [student] = await db.insert(students).values({ ...parsed.data, teacherId: teacher.id }).returning({ id: students.id });
@@ -26,8 +32,14 @@ export async function createStudent(_: FormState, data: FormData): Promise<FormS
     roomId: newRoomId(),
   });
 
+  let invite = '';
+  if (inviteEmail) {
+    const result = await inviteStudent(teacher, student.id, inviteEmail);
+    invite = 'ok' in result ? '?zaproszenie=wyslane' : '?zaproszenie=blad';
+  }
+
   revalidatePath('/panel', 'layout');
-  redirect(`/panel/uczniowie/${student.id}`);
+  redirect(`/panel/uczniowie/${student.id}${invite}`);
 }
 
 export async function updateStudent(studentId: string, _: FormState, data: FormData): Promise<FormState> {

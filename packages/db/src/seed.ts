@@ -1,16 +1,24 @@
 // Development data: the dev teacher, and a few example students and lessons on first run.
 // Safe to run many times. Runs automatically before `npm run dev`.
 
-import { eq } from 'drizzle-orm';
-import { getDb } from './client';
-import { DEV_TEACHER_ID, newRoomId } from './dev';
+import { and, eq, isNull } from 'drizzle-orm';
+import { closeDb, getDb } from './client';
+import { hashPassword } from './passwords';
+import { DEV_TEACHER_EMAIL, DEV_TEACHER_ID, DEV_TEACHER_PASSWORD, newRoomId } from './dev';
 import { boards, lessons, students, teacherProfiles, users } from './schema';
+
+// Development only: it creates a teacher with a known password (see README).
+if (process.env.NODE_ENV === 'production') throw new Error('The dev seed must not run in production.');
 
 const db = getDb();
 
 await db.insert(users)
-  .values({ id: DEV_TEACHER_ID, email: 'dev-teacher@teaching.local', displayName: 'Kuba' })
+  .values({ id: DEV_TEACHER_ID, email: DEV_TEACHER_EMAIL, displayName: 'Kuba', role: 'teacher' })
   .onConflictDoNothing();
+await db.update(users)
+  .set({ passwordHash: await hashPassword(DEV_TEACHER_PASSWORD), passwordUpdatedAt: new Date() })
+  .where(and(eq(users.id, DEV_TEACHER_ID), isNull(users.passwordHash)));
+
 await db.insert(teacherProfiles)
   .values({ userId: DEV_TEACHER_ID, subjects: ['matematyka', 'fizyka'] })
   .onConflictDoNothing();
@@ -39,7 +47,7 @@ if (!existing.length) {
 
   for (const [i, s] of examples.entries()) {
     const [student] = await db.insert(students).values({ ...s, teacherId: DEV_TEACHER_ID }).returning();
-    await db.insert(boards).values({ studentId: student.id, title: `Zeszyt: ${s.subject}`, roomId: newRoomId() });
+    await db.insert(boards).values({ studentId: student.id, title: `Zeszyt: ${s.subject}`, roomId: newRoomId(), kind: 'notebook' });
     for (const l of plan[i]) {
       const startsAt = at(l.day, l.h, 'm' in l ? l.m : 0);
       await db.insert(lessons).values({
@@ -56,5 +64,5 @@ if (!existing.length) {
   console.log('Added example students and lessons.');
 }
 
-console.log('Dev teacher is ready.');
-process.exit(0);
+console.log(`Dev teacher is ready: ${DEV_TEACHER_EMAIL} (password in README).`);
+await closeDb();

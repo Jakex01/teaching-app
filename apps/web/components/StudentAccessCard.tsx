@@ -26,7 +26,7 @@ export function StudentAccessCard({ studentId, firstName, active }: {
   return (
     <Card bg={active ? 'bg-white' : 'bg-paper'} className="p-5">
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="font-fun text-lg font-semibold">Dostęp ucznia</h3>
+        <h3 className="font-fun text-lg font-semibold">Link bez konta</h3>
         <span className={cn('rounded-full border-2 border-ink px-2.5 py-0.5 text-xs font-extrabold', active ? 'bg-mint' : 'bg-white')}>
           {active ? 'Włączony' : 'Wyłączony'}
         </span>
@@ -55,7 +55,7 @@ export function StudentAccessCard({ studentId, firstName, active }: {
         </p>
       ) : (
         <p className="text-sm font-bold opacity-70">
-          Utwórz osobisty link. {firstName} wejdzie nim do swojego zeszytu i zobaczy lekcje, bez zakładania konta.
+          Dla młodszych uczniów: osobisty link do zeszytu i lekcji, bez zakładania konta. Kto ma link, ten wchodzi, więc lepsze jest konto.
         </p>
       )}
 

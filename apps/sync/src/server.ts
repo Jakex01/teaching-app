@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ClientMessageSchema, LIMITS, type ServerMessage, type User } from '@teaching/shared';
 import { isProtectedRoom, verifyTicket } from '@teaching/shared/ticket';
-import { getRoom, releaseIfEmpty, saveAll, scheduleSave, type Client, type Room } from './rooms';
+import { clearRoom, deleteElement, getRoom, releaseIfEmpty, saveAllAndClose, upsertElement, type Client, type Room } from './rooms';
 
 type Message = ReturnType<typeof ClientMessageSchema.parse>;
 
@@ -72,7 +72,7 @@ function makeLimiter(capacity = 240, perSecond = 120) {
   };
 }
 
-function handleMessage(client: Client, msg: Message) {
+async function handleMessage(client: Client, msg: Message) {
   const { ws } = client;
 
   if (msg.t === 'join' || msg.t === 'join-ticket') {
@@ -99,10 +99,18 @@ function handleMessage(client: Client, msg: Message) {
       user = { id: client.id, name: msg.name, role: msg.role, color: msg.color };
     }
 
-    const room = getRoom(roomId);
+    let room: Room;
+    try {
+      room = await getRoom(roomId);
+    } catch (e) {
+      console.warn(`Could not load board ${roomId}:`, (e as Error).message);
+      send(ws, { t: 'error', msg: 'Nie udało się wczytać tablicy. Spróbuj za chwilę.' });
+      return ws.close(1011, 'Load failed');
+    }
+    if (ws.readyState !== WebSocket.OPEN) return; // left while the board was loading
     if (room.clients.size >= LIMITS.clientsPerRoom) {
       send(ws, { t: 'error', msg: 'This room is full.' });
-      releaseIfEmpty(room);
+      void releaseIfEmpty(room);
       return ws.close(1008, 'Room full');
     }
     client.room = room;
@@ -125,7 +133,7 @@ function handleMessage(client: Client, msg: Message) {
         // An image may only show a file uploaded to this same notebook.
         if (el.type === 'image' && !el.src.startsWith(`/api/assets/${room.id}/`)) continue;
         if (!room.elements.has(el.id) && room.elements.size >= LIMITS.elementsPerRoom) { full = true; continue; }
-        room.elements.set(el.id, el);
+        upsertElement(room, el);
         accepted.push(el);
       }
       if (full) send(ws, { t: 'error', msg: 'The board is full. Clear some space first.' });
@@ -134,12 +142,12 @@ function handleMessage(client: Client, msg: Message) {
       break;
     }
     case 'delete':
-      for (const id of msg.ids) room.elements.delete(id);
+      for (const id of msg.ids) deleteElement(room, id);
       broadcast(room, { t: 'delete', ids: msg.ids, by: client.id }, ws);
       break;
     case 'clear':
       if (!isTeacher) return; // only teachers can wipe the board
-      room.elements.clear();
+      clearRoom(room);
       broadcast(room, { t: 'clear', by: client.id }, ws);
       break;
     case 'cursor':
@@ -150,13 +158,12 @@ function handleMessage(client: Client, msg: Message) {
       broadcast(room, { t: 'follow', id: client.id, cam: msg.cam }, ws);
       return;
   }
-  scheduleSave(room);
 }
 
 const clients = new Set<Client>();
 
 wss.on('connection', (ws) => {
-  const client: Client = { id: crypto.randomBytes(6).toString('hex'), ws, room: null, user: null, alive: true };
+  const client: Client = { id: crypto.randomBytes(6).toString('hex'), ws, room: null, user: null, alive: true, queue: Promise.resolve() };
   clients.add(client);
   const allow = makeLimiter();
   let dropped = 0;
@@ -174,7 +181,9 @@ wss.on('connection', (ws) => {
     try { json = JSON.parse(data.toString()); } catch { return; }
     const parsed = ClientMessageSchema.safeParse(json);
     if (!parsed.success) return;
-    handleMessage(client, parsed.data);
+    // One message at a time per person, in order (joining waits for the board to load from the database).
+    const msg = parsed.data;
+    client.queue = client.queue.then(() => handleMessage(client, msg)).catch(e => console.warn('Message failed:', (e as Error).message));
   });
 
   ws.on('close', () => {
@@ -184,7 +193,7 @@ wss.on('connection', (ws) => {
     room.clients.delete(client);
     broadcast(room, { t: 'presence', users: presence(room) });
     broadcast(room, { t: 'bye', id: client.id });
-    releaseIfEmpty(room);
+    void releaseIfEmpty(room);
   });
 
   ws.on('error', () => ws.terminate());
@@ -199,6 +208,8 @@ const heartbeat = setInterval(() => {
   }
 }, 30_000);
 wss.on('close', () => clearInterval(heartbeat));
+// Listen errors (e.g. port in use) are reported by the HTTP server handler below.
+wss.on('error', () => {});
 
 // ---------- Start / stop ----------
 server.listen(PORT, () => {
@@ -214,8 +225,12 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   throw err;
 });
 
-function shutdown() {
-  saveAll();
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  wss.close();
+  try { await saveAllAndClose(); } catch (e) { console.error('Could not save everything on shutdown:', (e as Error).message); }
   process.exit(0);
 }
 process.on('SIGINT', shutdown);

@@ -1,0 +1,6 @@
+# Known findings that can't be fixed yet, each with a reason and an end date (it fails again after that).
+
+[[IgnoredVulns]]
+id = "GHSA-vfj7-8cjw-p6xm"
+ignoreUntil = 2026-12-31
+reason = "braces (no patched version exists): only in dev tooling (@next/eslint-plugin-next via fast-glob), which reads our own source files, never untrusted input. npm audit --omit=dev still checks everything that ships."

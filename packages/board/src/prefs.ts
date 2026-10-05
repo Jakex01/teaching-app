@@ -33,3 +33,36 @@ export function getPref<K extends keyof Prefs>(key: K): Prefs[K] | undefined {
 export function setPref<K extends keyof Prefs>(key: K, value: Prefs[K]) {
   try { localStorage.setItem('doodle.' + key, JSON.stringify(value)); } catch { /* ignore */ }
 }
+
+// ---------- Where you were looking on each board ----------
+// Saved as the centre of the screen and the zoom, so it works on a different window size.
+// Only the last few boards are kept.
+
+const View = z.object({ cx: z.number().finite(), cy: z.number().finite(), z: z.number().min(0.05).max(10) });
+export type SavedView = z.infer<typeof View>;
+const Views = z.record(z.string().max(40), View.extend({ t: z.number() }));
+const VIEWS_KEY = 'doodle.views';
+const MAX_VIEWS = 50;
+
+function readViews() {
+  try {
+    const parsed = Views.safeParse(JSON.parse(localStorage.getItem(VIEWS_KEY) ?? '{}'));
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getView(room: string): SavedView | undefined {
+  const v = readViews()[room];
+  return v ? { cx: v.cx, cy: v.cy, z: v.z } : undefined;
+}
+
+export function setView(room: string, view: SavedView) {
+  try {
+    const all = readViews();
+    all[room] = { ...view, t: Date.now() };
+    const keep = Object.entries(all).sort((a, b) => b[1].t - a[1].t).slice(0, MAX_VIEWS);
+    localStorage.setItem(VIEWS_KEY, JSON.stringify(Object.fromEntries(keep)));
+  } catch { /* private mode or full storage: just don't remember */ }
+}

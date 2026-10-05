@@ -15,6 +15,48 @@
       "when": 1790434258053,
       "tag": "0001_student_access_links",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790508266180,
+      "tag": "0002_board_elements",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790509690539,
+      "tag": "0003_teacher_login",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791194170141,
+      "tag": "0004_google_login",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791197651323,
+      "tag": "0005_student_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791206133642,
+      "tag": "0006_task_hints",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791207758118,
+      "tag": "0007_lesson_boards",
+      "breakpoints": true
     }
   ]
 }

@@ -33,6 +33,7 @@ export function sniffImage(bytes: Uint8Array): AssetExt | null {
 
 export async function countRoomAssets(room: string) {
   if (!ROOM_RE.test(room)) return 0;
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path built from validated room/file names under ASSETS_DIR
   try { return (await fs.readdir(path.join(ASSETS_DIR, room))).length; } catch { return 0; }
 }
 
@@ -41,7 +42,9 @@ export async function saveAsset(room: string, ext: AssetExt, bytes: Uint8Array) 
   if (!ROOM_RE.test(room)) throw new Error('Invalid room');
   const id = crypto.randomBytes(16).toString('base64url'); // 22 characters, unguessable
   const dir = path.join(ASSETS_DIR, room);
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path built from validated room/file names under ASSETS_DIR
   await fs.mkdir(dir, { recursive: true });
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path built from validated room/file names under ASSETS_DIR
   await fs.writeFile(path.join(dir, `${id}.${ext}`), bytes, { flag: 'wx' });
   return `/api/assets/${room}/${id}.${ext}`;
 }
@@ -51,6 +54,7 @@ export async function readAsset(room: string, file: string) {
   const m = FILE_RE.exec(file);
   if (!ROOM_RE.test(room) || !m) return null;
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- path built from validated room/file names under ASSETS_DIR
     const bytes = await fs.readFile(path.join(ASSETS_DIR, room, file));
     return { bytes, type: ASSET_TYPES[m[2] as AssetExt] };
   } catch {

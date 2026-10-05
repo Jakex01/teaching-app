@@ -10,14 +10,17 @@
     "generate": "drizzle-kit generate",
     "migrate": "tsx src/migrate.ts",
     "seed": "tsx src/seed.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "import-pglite": "tsx src/import-pglite.ts",
+    "teacher:create": "tsx src/create-teacher.ts"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.8",
-    "drizzle-orm": "^0.45.3"
+    "drizzle-orm": "^0.45.3",
+    "postgres": "^3.4.9"
   }
 }

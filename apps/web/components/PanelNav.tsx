@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { cn } from './ui';
-import { CalendarIcon, HomeIcon, SparkIcon, UsersIcon, WalletIcon } from './icons';
+import { CalendarIcon, HomeIcon, KeyIcon, SparkIcon, UsersIcon, WalletIcon } from './icons';
 
 const ITEMS: { href: string; label: string; icon: ReactNode; color: string; soon?: boolean }[] = [
   { href: '/panel', label: 'Pulpit', icon: <HomeIcon />, color: 'bg-sun' },
@@ -12,6 +12,7 @@ const ITEMS: { href: string; label: string; icon: ReactNode; color: string; soon
   { href: '/panel/lekcje', label: 'Lekcje', icon: <CalendarIcon />, color: 'bg-sky text-white' },
   { href: '/panel/platnosci', label: 'Płatności', icon: <WalletIcon />, color: 'bg-bubble', soon: true },
   { href: '/panel/ai', label: 'Raporty AI', icon: <SparkIcon />, color: 'bg-grape text-white', soon: true },
+  { href: '/panel/konto', label: 'Konto', icon: <KeyIcon />, color: 'bg-white' },
 ];
 
 export function PanelNav() {

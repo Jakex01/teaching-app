@@ -1,0 +1,100 @@
+# Local environment.
+#
+#   npm run db:up                       Postgres + Mailpit (for `npm run dev`)
+#   docker compose --profile app up --build   everything in containers: db + migrations + web + sync
+#
+# The full stack runs in production mode, so it needs secrets in a root .env file (see .env.example);
+# without them web and sync refuse to start.
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: teaching
+      POSTGRES_PASSWORD: teaching   # local development only
+      POSTGRES_DB: teaching
+    ports:
+      # 55432 on this computer (only), so it doesn't clash with a Postgres already installed on 5432.
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teaching -d teaching"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Catches every e-mail the app sends, so nothing reaches real inboxes during development.
+  # Read them at http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"   # web inbox
+      - "127.0.0.1:1025:1025"   # SMTP
+    environment:
+      MP_MAX_MESSAGES: 500
+
+  migrate:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: apps/sync/Dockerfile
+    command: ["node", "--import", "tsx", "packages/db/src/migrate.ts"]
+    environment:
+      DATABASE_URL: postgres://teaching:teaching@db:5432/teaching
+    depends_on:
+      db:
+        condition: service_healthy
+
+  sync:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: apps/sync/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://teaching:teaching@db:5432/teaching
+      SYNC_SECRET: ${SYNC_SECRET:-}
+      ALLOWED_ORIGINS: http://localhost:3000
+    ports:
+      - "3001:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://teaching:teaching@db:5432/teaching
+      SYNC_SECRET: ${SYNC_SECRET:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      SYNC_PUBLIC_URL: ws://localhost:3001/ws
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      # Sign in with Google (optional): set both in .env, never in this file.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALLOW_GOOGLE_SIGNUP: ${ALLOW_GOOGLE_SIGNUP:-false}
+      # E-mail (invitations, password resets). Locally everything goes to Mailpit.
+      SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
+      MAIL_FROM: ${MAIL_FROM:-Doodle Board <no-reply@doodleboard.local>}
+      # AI hints on task cards (optional): set in .env, never in this file.
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - assets:/app/apps/web/.data/assets
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+  assets:

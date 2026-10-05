@@ -1,11 +1,15 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { LessonItem, boardHref } from '@/components/LessonItem';
+import { BoardList } from '@/components/BoardList';
+import { NewBoardForm } from '@/components/BoardForms';
 import { StudentAccessCard } from '@/components/StudentAccessCard';
+import { StudentAccountCard } from '@/components/StudentAccountCard';
 import { StudentForm } from '@/components/StudentForm';
 import { Avatar, Badge, Button, Card, EmptyState, ExternalButton, LinkButton, SectionTitle } from '@/components/ui';
 import { ArrowLeftIcon, BoardIcon, CalendarIcon, EyeIcon } from '@/components/icons';
 import { archiveStudent, updateStudent } from '@/lib/actions';
+import { listBoards } from '@/lib/boards';
 import { getStudent } from '@/lib/data';
 import { requireTeacher } from '@/lib/session';
 import { dayKey, fmtDayLabel, fmtShortDate, fmtTime } from '@/lib/time';
@@ -13,14 +17,16 @@ import { Uuid } from '@/lib/validation';
 
 export const metadata = { title: 'Uczeń' };
 
-export default async function StudentPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function StudentPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ zaproszenie?: string }> }) {
   const { id } = await params;
+  const { zaproszenie } = await searchParams;
   const teacher = await requireTeacher();
   if (!Uuid.safeParse(id).success) notFound();
   const student = await getStudent(teacher.id, id);
   if (!student || student.status === 'archived') notFound();
 
   const tz = teacher.timezone;
+  const boardList = await listBoards(student.id);
   const now = new Date();
   const upcoming = student.lessons.filter(l => l.startsAt >= now || (l.status === 'scheduled' && l.endsAt >= now)).reverse();
   const past = student.lessons.filter(l => !upcoming.includes(l));
@@ -51,7 +57,7 @@ export default async function StudentPage({ params }: { params: Promise<{ id: st
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {student.roomId && <LinkButton href={boardHref(student.id)} variant="sun" size="lg"><BoardIcon />Zeszyt-tablica</LinkButton>}
+          {student.roomId && <LinkButton href={boardHref(student.id)} variant="sun" size="lg"><BoardIcon />Kontynuuj tablicę</LinkButton>}
           {/* A plain <a>, not <Link>: Next.js would prefetch a <Link>, which would sign in on hover. */}
           <ExternalButton href={`/panel/uczniowie/${student.id}/podglad`} size="lg" title="Otwiera widok ucznia w nowej karcie">
             <EyeIcon />Podgląd jako uczeń
@@ -62,6 +68,12 @@ export default async function StudentPage({ params }: { params: Promise<{ id: st
 
       <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_400px]">
         <section className="min-w-0">
+          <SectionTitle>Tablice</SectionTitle>
+          <div className="mb-8">
+            <BoardList boards={boardList} hrefBase="/panel/tablica/" tz={tz} canRename />
+            <NewBoardForm studentId={student.id} />
+          </div>
+
           <SectionTitle>Nadchodzące lekcje</SectionTitle>
           {upcoming.length ? (
             <div className="mb-8 grid gap-2.5">
@@ -96,6 +108,28 @@ export default async function StudentPage({ params }: { params: Promise<{ id: st
         </section>
 
         <aside>
+          {zaproszenie === 'wyslane' && student.invitation && (
+            <p role="status" className="mb-3 rounded-2xl border-[2.5px] border-ink bg-mint px-4 py-2 font-bold">
+              ✓ Uczeń dodany. Zaproszenie poszło na {student.invitation.email}.
+            </p>
+          )}
+          {zaproszenie === 'blad' && !student.account && (
+            <p role="alert" className="mb-3 rounded-2xl border-[2.5px] border-ink bg-tomato px-4 py-2 font-bold text-white">
+              Uczeń dodany, ale zaproszenia nie udało się wysłać. Spróbuj ponownie poniżej.
+            </p>
+          )}
+          <div className="mb-4">
+            <StudentAccountCard
+              studentId={student.id}
+              firstName={student.firstName}
+              account={student.account ? { email: student.account.email, since: fmtShortDate(student.account.createdAt, tz) } : null}
+              invitation={student.invitation ? {
+                email: student.invitation.email,
+                sent: `${fmtShortDate(student.invitation.createdAt, tz)}, ${fmtTime(student.invitation.createdAt, tz)}`,
+                expires: fmtShortDate(student.invitation.expiresAt, tz),
+              } : null}
+            />
+          </div>
           <div className="mb-8">
             <StudentAccessCard
               studentId={student.id}

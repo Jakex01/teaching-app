@@ -16,6 +16,7 @@ export type User = z.infer<typeof UserSchema>;
 
 // Strips control characters so names can't break layouts or logs.
 export const DisplayNameSchema = z.string()
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point: they're removed
   .transform(s => s.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, LIMITS.name))
   .pipe(z.string().min(1));
 

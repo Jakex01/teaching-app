@@ -1,20 +1,135 @@
+# Quality and security checks. Runs on every pull request, on main, and weekly
+# (the weekly run catches vulnerabilities published after the code was merged).
+#
+# Third-party actions are pinned to a commit SHA (a tag could be moved to other code).
+# Scanners run from Docker images with a fixed version. Dependabot keeps both up to date.
+
 name: CI
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check:
+  quality:
+    name: Lint, types, tests, build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  secrets:
+    name: Secrets in git history (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 git /repo --redact --no-banner --exit-code 1
+
+  dependencies:
+    name: Vulnerable dependencies (npm audit, OSV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: npm audit (high and critical)
+        run: npm audit --audit-level=high --omit=dev
+      - name: OSV-Scanner
+        run: docker run --rm -v "$PWD:/src" ghcr.io/google/osv-scanner:v2.6.0 scan source --lockfile /src/package-lock.json
+
+  sast:
+    name: Code scan (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Semgrep (OWASP Top 10, TypeScript, React, Next.js, Node, secrets, Docker)
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:1.177.0
+          semgrep scan --error --metrics=off
+          --config p/owasp-top-ten --config p/typescript --config p/react --config p/nextjs
+          --config p/nodejs --config p/secrets --config p/dockerfile --config p/docker-compose
+          --config p/github-actions
+          --exclude node_modules --exclude .next --exclude .data
+
+  docker:
+    name: Docker images (Hadolint, Trivy) and running app (OWASP ZAP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Hadolint (Dockerfile best practices)
+        run: |
+          for f in apps/web/Dockerfile apps/sync/Dockerfile; do
+            echo "== $f"
+            docker run --rm -i hadolint/hadolint:v2.15.1-alpine hadolint --failure-threshold warning - < "$f"
+          done
+
+      - name: Trivy (misconfigurations in Dockerfiles and compose)
+        run: docker run --rm -v "$PWD:/src" aquasec/trivy:0.74.0 config --exit-code 1 --severity HIGH,CRITICAL /src
+
+      - name: Build and start the full stack (production mode, throwaway secrets)
+        run: |
+          {
+            echo "SYNC_SECRET=$(openssl rand -base64 32)"
+            echo "SESSION_SECRET=$(openssl rand -base64 32)"
+          } > .env
+          docker compose --profile app up -d --build --wait
+
+      - name: Trivy (known vulnerabilities in the images)
+        run: |
+          for img in teaching-app-web teaching-app-sync; do
+            echo "== $img"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.74.0 \
+              image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln "$img"
+          done
+
+      - name: OWASP ZAP baseline (passive scan of the running app)
+        run: |
+          mkdir -p .zap/out && cp .zap/rules.tsv .zap/out/ && chmod -R 777 .zap/out
+          docker run --rm --network host -v "$PWD/.zap/out:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:2.17.0 \
+            zap-baseline.py -t http://localhost:3000 -m 2 -c rules.tsv -I -r zap-report.html -J zap-report.json
+
+      - name: ZAP report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zap-report
+          path: .zap/out/zap-report.*
+          if-no-files-found: ignore
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose --profile app logs --no-color --tail 100
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose --profile app down -v

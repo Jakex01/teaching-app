@@ -32,3 +32,18 @@ export async function studentPastLessons(studentId: string, limit = 5) {
     .orderBy(desc(lessons.startsAt))
     .limit(limit);
 }
+
+/** Everything the student's home page shows: the next lesson (and whether it's on now), the rest, and past ones. */
+export async function studentHome(studentId: string) {
+  const [upcoming, past] = await Promise.all([studentUpcomingLessons(studentId), studentPastLessons(studentId)]);
+  const now = Date.now();
+  const next = upcoming.find(l => l.status === 'scheduled') ?? null;
+  return {
+    next,
+    rest: upcoming.filter(l => l.id !== next?.id),
+    past,
+    minutesToNext: next ? Math.round((next.startsAt.getTime() - now) / 60_000) : null,
+    // "Live" from 15 minutes before the start until the end.
+    isLive: next ? next.startsAt.getTime() - 15 * 60_000 <= now && next.endsAt.getTime() > now : false,
+  };
+}

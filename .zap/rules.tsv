@@ -1,0 +1,17 @@
+# OWASP ZAP baseline rules: <id> <TAB> IGNORE|WARN|FAIL <TAB> reason. Anything not listed is WARN.
+# Checks we rely on: a regression here fails CI.
+10010	FAIL	Cookie without HttpOnly
+10011	FAIL	Cookie without Secure (production cookies are Secure)
+10020	FAIL	Clickjacking protection (X-Frame-Options / frame-ancestors) missing
+10021	FAIL	X-Content-Type-Options missing
+10038	FAIL	Content-Security-Policy missing
+10054	FAIL	Cookie without SameSite
+10098	FAIL	Cross-domain misconfiguration (CORS)
+90004	FAIL	Cross-Origin-Embedder/Opener-Policy missing
+# Reviewed and not applicable:
+10202	IGNORE	Next.js server actions reject requests whose Origin doesn't match the host (verified), so no token is needed
+10031	IGNORE	Reflected ?next= goes into a React-escaped attribute and the server only accepts same-site paths
+10044	IGNORE	Next.js redirect responses carry a small body with the target URL; nothing sensitive
+10049	IGNORE	Informational: dynamic pages are not cacheable, by design
+10109	IGNORE	Informational: modern web application
+10111	IGNORE	Informational: login form detected

@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "SYNC_DEV=1 tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "import-json": "tsx src/import-json.ts"
   },
   "dependencies": {
+    "@teaching/db": "*",
     "@teaching/shared": "*",
     "tsx": "^4.23.15",
     "ws": "^8.21.3"

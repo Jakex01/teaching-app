@@ -1,7 +1,7 @@
 # Live-sync server (and database migrations). Build from the repo root:
 #   docker build -f apps/sync/Dockerfile .
 
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
@@ -12,7 +12,7 @@ COPY packages/shared/package.json packages/shared/
 # Production dependencies only: dev tools such as drizzle-kit stay out of the image.
 RUN npm ci --ignore-scripts --omit=dev --workspace @teaching/sync --workspace @teaching/db --workspace @teaching/shared --include-workspace-root=false
 
-FROM node:22-alpine
+FROM node:26-alpine
 WORKDIR /app
 # The app only needs `node`. Removing npm/npx/corepack drops their dependencies (and any
 # vulnerabilities in them) from the image.

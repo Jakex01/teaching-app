@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { engine } from './board/engine';
 import { JoinScreen } from './components/JoinScreen';
 import { RemoteCursors, Toast } from './components/Overlays';
+import { DrawDialog } from './components/DrawDialog';
 import { PdfDialog } from './components/PdfImport';
 import { PlaceInSection } from './components/PlaceInSection';
 import { SectionsNav } from './components/SectionsNav';
@@ -74,6 +75,7 @@ export function BoardApp({ syncUrl, session }: BoardAppProps) {
       <Zoom />
       <Toast />
       <PdfDialog />
+      <DrawDialog />
       <PlaceInSection />
 
       {joinVisible && <JoinScreen onJoin={onJoin} />}

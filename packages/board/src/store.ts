@@ -4,7 +4,7 @@ import { create } from 'zustand';
 import { COLORS, type SizeIndex, type ToolId } from './constants';
 import { getPref } from './prefs';
 import type { PdfAnalysis } from './board/pdf';
-import type { User } from './protocol';
+import type { BoardElement, User } from './protocol';
 
 export interface Style {
   color: string;
@@ -50,6 +50,15 @@ interface UIState {
   sections: { id: string; title: string; color: string }[];
   /** Just pasted (an image, maybe with its task card): offer to move it into a section. */
   placed: { ids: string[]; key: number } | null;
+  /** The "✨ Rysuj" dialog: where the drawing goes, and its state. Null when closed. */
+  draw: {
+    target: { kind: 'card'; id: string } | { kind: 'view' };
+    status: 'idle' | 'loading' | 'preview' | 'error';
+    message: string | null;
+    title: string | null;
+    preview: { elements: BoardElement[]; width: number; height: number } | null;
+    warnings: string[];
+  } | null;
 }
 
 export const useUI = create<UIState>(() => ({
@@ -75,6 +84,7 @@ export const useUI = create<UIState>(() => ({
   pdf: null,
   sections: [],
   placed: null,
+  draw: null,
 }));
 
 let toastKey = 0;

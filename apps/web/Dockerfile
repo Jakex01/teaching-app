@@ -1,7 +1,7 @@
 # Next.js app as a standalone server (see output: 'standalone' in next.config.ts).
 # Build from the repo root: docker compose --profile app up --build
 
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
@@ -16,7 +16,7 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1 NEXT_STANDALONE=1
 RUN npm run build -w @teaching/web
 
-FROM node:22-alpine AS run
+FROM node:26-alpine AS run
 WORKDIR /app
 # The running app doesn't need npm (and its bundled packages only add known vulnerabilities).
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \

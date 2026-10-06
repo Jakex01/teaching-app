@@ -198,6 +198,12 @@ docker-compose.yml     PostgreSQL for development; the full stack with --profile
 
 Frontend code lives in `apps/web` and `packages/board`. Backend code lives in `apps/sync` and, later, the API routes in `apps/web`. Both sides validate with the same schemas from `packages/shared`.
 
+## Graphics tablets and styluses
+
+Pen input uses Pointer Events, so tablets (Huion, Wacom, XP-Pen) and styluses work in any modern browser: pressure sets the line width, every sample is used (coalesced events) and a few predicted points are drawn ahead of the line so it keeps up with a fast pen (shown only, never saved). Once a pen is used, the pen tool's colour bubble shows **delikatny / normalny / mocny** pressure sensitivity (remembered per browser) and a dot: green when real pressure comes through, red when the tablet reports none.
+
+If the dot is red: on Windows turn on **Windows Ink** in the tablet driver; on macOS give the tablet driver the *Accessibility* and *Input Monitoring* permissions. Tablet buttons can be mapped in the driver to the board's shortcuts: **P** pen, **E** eraser, **V** select, **H** hand, **Ctrl+Z** undo, **Ctrl+K** ✨ drawing. The pen's side button acting as a right click pans the board.
+
 ## ✨ Drawing with AI
 
 **✨ Rysuj** on the top bar (or Ctrl+K), or **✨ Rysunek** in a task card's solution area: describe a figure in words (“okrąg wpisany w czworokąt ABCD”, “dwa okręgi styczne zewnętrznie”, “trójkąt ABC z wysokością CD”, “wykres y = x^2 − 4x + 3”). The AI only returns a *description* of the drawing (points, segments, circles and constructions such as inscribed/circumscribed circles, tangent circles, tangents from a point, feet of perpendiculars, intersections, axes and graphs); `packages/shared/src/drawing.ts` computes the geometry exactly (an inscribed circle really touches every side) and turns it into ordinary board elements. Graphs are drawn by a small formula parser (`packages/shared/src/expr.ts`: numbers, x, + − · / ^, brackets, sin/cos/tg/sqrt/abs/ln/log/exp), never by running code. A preview comes first (Wstaw / Spróbuj inaczej); inserting is one undo step. The AI is told never to solve or add values that weren't asked for; its answer is validated before anything is drawn. Same daily AI limits as hints (`apps/web/lib/ai/limits.ts`).

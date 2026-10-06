@@ -345,3 +345,11 @@
 .draw-title { margin: 0; font-weight: 800; }
 .draw-warning, .draw-error { margin: 8px 0 0; font-weight: 700; font-size: 13px; }
 .draw-error { color: var(--tomato); }
+
+/* ---------- Graphics tablet / stylus ---------- */
+.pen-panel { display: flex; align-items: center; gap: 4px; }
+.pen-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--tomato); border: 2px solid var(--ink); margin-right: 2px; }
+.pen-dot.ok { background: var(--mint); }
+.pen-level { font: inherit; font-size: 11px; font-weight: 800; padding: 3px 7px; border-radius: 999px; border: 2px solid transparent; background: none; cursor: pointer; color: var(--ink); }
+.pen-level.active { border-color: var(--ink); background: var(--sun); }
+@media (max-width: 700px) { .pen-level { padding: 3px 5px; } }

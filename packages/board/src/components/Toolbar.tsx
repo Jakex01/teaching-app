@@ -29,8 +29,11 @@ export function Dock() {
   );
 }
 
+const PEN_LABELS = { soft: 'delikatny', normal: 'normalny', firm: 'mocny' } as const;
+
 export function StyleBubble() {
   const tool = useUI(s => s.tool);
+  const pen = useUI(s => s.pen);
   const style = useUI(s => s.style);
   const selection = useUI(s => s.selection);
   const ref = useRef<HTMLDivElement>(null);
@@ -72,6 +75,20 @@ export function StyleBubble() {
           </button>
         ))}
       </div>
+      {pen.seen && def?.id === 'pen' && (
+        <>
+          <div className="divider" />
+          <div className="pen-panel" title={pen.pressureWorks ? 'Nacisk rysika działa' : 'Rysik bez nacisku: sprawdź sterownik tabletu (Windows Ink / uprawnienia na Macu)'}>
+            <span className={`pen-dot${pen.pressureWorks ? ' ok' : ''}`} aria-hidden="true" />
+            {(['soft', 'normal', 'firm'] as const).map(s => (
+              <button key={s} className={`pen-level${pen.sensitivity === s ? ' active' : ''}`} onClick={() => engine.setPenSensitivity(s)}
+                aria-label={`Czułość nacisku: ${PEN_LABELS[s]}`} title={`Czułość nacisku: ${PEN_LABELS[s]}`}>
+                {PEN_LABELS[s]}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
       <div className="divider fill-only" />
       <button className={`fill-toggle fill-only${style.fill ? ' active' : ''}`} title="Fill shapes" aria-label="Fill shapes"
         style={{ '--fillc': color } as CssVars} onClick={engine.toggleFill}>

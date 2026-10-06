@@ -3,10 +3,10 @@
 
 import { nanoid } from 'nanoid';
 import { LINE_TYPES, SHAPE_TYPES, SIZES, TEXT_SIZES, TOOLS, toolDef, type SizeIndex, type ToolDef, type ToolId } from '../constants';
-import { getView, setPref, setView } from '../prefs';
+import { getPref, getView, setPref, setView } from '../prefs';
 import { DrawingSpec, buildDrawing } from '../protocol';
 import { LIMITS, type BoardElement, type FollowCamera, type ImageEl, type LineEl, type ServerMessage, type SectionEl, type ShapeEl, type StrokeEl, type TaskCardEl, type TextEl, type User } from '../protocol';
-import { showToast, useUI, type Me } from '../store';
+import { showToast, useUI, type Me, type PenSensitivity } from '../store';
 import { Socket, defaultSyncUrl } from '../net/socket';
 import {
   CARD, SECTION, bbox, cardDrawButton, clamp, clearMeasureCache, hintLayout, solutionArea, fromImageLocal, hit, imageCenter, imageCorners, normalizeAngle, rotate,
@@ -51,8 +51,14 @@ const newId = () => nanoid(12);
 export type PdfTarget = { kind: 'new'; title: string } | { kind: 'section'; id: string } | { kind: 'none' };
 
 /** A stroke point; a pen (not a mouse or finger) also records its pressure, for nicer ink. */
+/** Pressure curve: soft = a light touch already draws thick, firm = you have to press harder. */
+const PRESSURE_CURVE: Record<PenSensitivity, number> = { soft: 0.6, normal: 1, firm: 1.6 };
+let pressureCurve = PRESSURE_CURVE[getPref('pressure') ?? 'normal'];
+
 const penPoint = (x: number, y: number, e: PointerEvent): StrokeEl['pts'][number] =>
-  e.pointerType === 'pen' && e.pressure > 0 ? [wc(x), wc(y), Math.round(e.pressure * 100) / 100] : [wc(x), wc(y)];
+  e.pointerType === 'pen' && e.pressure > 0
+    ? [wc(x), wc(y), Math.round(Math.min(1, Math.pow(e.pressure, pressureCurve)) * 100) / 100]
+    : [wc(x), wc(y)];
 
 // Task cards (PDF worksheets, pasted tasks), in board units; 1 unit = 1 PDF point.
 const CARD_ROW_GAP = 48;
@@ -117,6 +123,8 @@ class BoardEngine {
   private viewRoom: string | null = null;
   /** A section to add once the board has loaded ("add it there" when making a new board). */
   private pendingSection: string | null = null;
+  /** Where the pen is about to be (from the browser's prediction): drawn ahead of the stroke, never saved. */
+  private predicted: [number, number][] = [];
   private dpr = 1;
   private selection = new Set<string>();
   private undoStack: HistoryEntry[] = [];
@@ -439,6 +447,10 @@ class BoardEngine {
       for (const el of this.elements.values()) {
         if (layer(el) !== drawLayer) continue;
         if (this.editing?.el.id === el.id) continue;
+        if (this.drag?.kind === 'stroke' && this.drag.el.id === el.id && this.predicted.length) {
+          drawElement(ctx, { ...el, pts: [...this.drag.el.pts, ...this.predicted] } as StrokeEl, () => this.requestDraw());
+          continue;
+        }
         const b = bbox(el);
         if (b.x2 < v.x1 - 50 || b.x1 > v.x2 + 50 || b.y2 < v.y1 - 50 || b.y1 > v.y2 + 50) continue;
         drawElement(ctx, el, () => this.requestDraw());
@@ -759,6 +771,7 @@ class BoardEngine {
         return;
       }
     }
+    if (e.pointerType === 'pen') this.notePen(e);
     const w = this.toWorld(e.clientX, e.clientY);
     this.pointerWorld = w;
     if (this.me) this.sendCursor(wc(w.x), wc(w.y));
@@ -787,7 +800,13 @@ class BoardEngine {
           if (Math.hypot(p.x - prev[0], p.y - prev[1]) * this.cam.z < 1.5) continue;
           pts.push(penPoint(p.x, p.y, ev));
         }
-        if (pts.length !== before) { this.requestDraw(); this.sendDraft(drag.el); }
+        // Draw a few predicted points ahead so the line keeps up with a fast pen (shown only, not stored).
+        this.predicted = (e.getPredictedEvents?.() ?? []).slice(0, 3).map(ev => {
+          const p = this.toWorld(ev.clientX, ev.clientY);
+          return [wc(p.x), wc(p.y)];
+        });
+        if (pts.length !== before || this.predicted.length) this.requestDraw();
+        if (pts.length !== before) this.sendDraft(drag.el);
         break;
       }
       case 'shape': {
@@ -949,6 +968,7 @@ class BoardEngine {
     this.canvas?.classList.remove('grabbing');
     switch (d.kind) {
       case 'stroke':
+        this.predicted = [];
         this.send([d.el]);
         this.pushHistory({ kind: 'add', els: [clone(d.el)] });
         this.growCards([d.el]);
@@ -1502,6 +1522,20 @@ class BoardEngine {
     section.w = wc(section.w + delta);
     updates.set(section.id, section);
   }
+
+  // ---------- Graphics tablet / stylus ----------
+  /** Notes that a pen is used and whether real pressure comes through (without it, browsers report a flat 0.5). */
+  private notePen(e: PointerEvent) {
+    const pen = useUI.getState().pen;
+    const works = pen.pressureWorks || (e.buttons > 0 && e.pressure > 0 && e.pressure !== 0.5);
+    if (!pen.seen || works !== pen.pressureWorks) useUI.setState({ pen: { ...pen, seen: true, pressureWorks: works } });
+  }
+
+  setPenSensitivity = (sensitivity: PenSensitivity) => {
+    pressureCurve = PRESSURE_CURVE[sensitivity];
+    setPref('pressure', sensitivity);
+    useUI.setState({ pen: { ...useUI.getState().pen, sensitivity } });
+  };
 
   // ---------- Groups ----------
   /** The ids plus every element sharing a group with one of them. */

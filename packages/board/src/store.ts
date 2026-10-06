@@ -6,6 +6,8 @@ import { getPref } from './prefs';
 import type { PdfAnalysis } from './board/pdf';
 import type { BoardElement, User } from './protocol';
 
+export type PenSensitivity = 'soft' | 'normal' | 'firm';
+
 export interface Style {
   color: string;
   hlColor: string;
@@ -50,6 +52,8 @@ interface UIState {
   sections: { id: string; title: string; color: string }[];
   /** Just pasted (an image, maybe with its task card): offer to move it into a section. */
   placed: { ids: string[]; key: number } | null;
+  /** A graphics tablet or stylus: seen at all, does pressure come through, and how sensitive it feels. */
+  pen: { seen: boolean; pressureWorks: boolean; sensitivity: PenSensitivity };
   /** The "✨ Rysuj" dialog: where the drawing goes, and its state. Null when closed. */
   draw: {
     target: { kind: 'card'; id: string } | { kind: 'view' };
@@ -84,6 +88,7 @@ export const useUI = create<UIState>(() => ({
   pdf: null,
   sections: [],
   placed: null,
+  pen: { seen: false, pressureWorks: false, sensitivity: getPref('pressure') ?? 'normal' },
   draw: null,
 }));
 

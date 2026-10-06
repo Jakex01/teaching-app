@@ -10,6 +10,7 @@ const schemas = {
   color: paletteColor,
   hlColor: paletteColor,
   size: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+  pressure: z.enum(['soft', 'normal', 'firm']),
   fill: z.boolean(),
   me: z.object({
     name: z.string().max(24),

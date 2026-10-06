@@ -78,6 +78,20 @@ jobs:
           --config p/github-actions
           --exclude node_modules --exclude .next --exclude .data
 
+  terraform:
+    name: Terraform (format, validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: terraform fmt
+        run: docker run --rm -v "$PWD/infra/terraform:/tf" -w /tf hashicorp/terraform:1.16.5 fmt -check -diff
+      - name: terraform validate
+        run: |
+          docker run --rm -v "$PWD/infra/terraform:/tf" -w /tf hashicorp/terraform:1.16.5 init -backend=false -input=false
+          docker run --rm -v "$PWD/infra/terraform:/tf" -w /tf hashicorp/terraform:1.16.5 validate
+
   docker:
     name: Docker images (Hadolint, Trivy) and running app (OWASP ZAP)
     runs-on: ubuntu-latest
@@ -94,7 +108,7 @@ jobs:
           done
 
       - name: Trivy (misconfigurations in Dockerfiles and compose)
-        run: docker run --rm -v "$PWD:/src" aquasec/trivy:0.74.0 config --exit-code 1 --severity HIGH,CRITICAL /src
+        run: docker run --rm -v "$PWD:/src" aquasec/trivy:0.74.0 config --exit-code 1 --severity HIGH,CRITICAL --ignorefile /src/.trivyignore.yaml /src
 
       - name: Build and start the full stack (production mode, throwaway secrets)
         run: |

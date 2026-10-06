@@ -1,0 +1,7 @@
+# Findings we accept on purpose, with the reason. Trivy reads this in CI (see .github/workflows/ci.yml).
+misconfigurations:
+  - id: AVD-GCP-0031
+    statement: >-
+      The single VM is the web server: Caddy terminates HTTPS on it, so it needs a public IP.
+      Only ports 80 and 443 are open (SSH only from Identity-Aware Proxy). A load balancer in front
+      would cost about $18/month more and isn't needed at this scale.

@@ -1,5 +1,5 @@
 import { FONT } from '../constants';
-import { LIMITS, type BoardElement, type ImageEl, type ShapeEl, type TaskCardEl, type TextEl } from '../protocol';
+import { LIMITS, type BoardElement, type ShapeEl, type TaskCardEl, type TextEl } from '../protocol';
 
 export interface Box { x1: number; y1: number; x2: number; y2: number }
 export type Pt = [number, number];
@@ -8,10 +8,16 @@ let measureCtx: CanvasRenderingContext2D | null = null;
 
 // Task card layout and solution area are shared with the server (lists, copying unfinished tasks).
 export { CARD, solutionArea } from '../protocol';
-import { CARD } from '../protocol';
+import { CARD, solutionArea } from '../protocol';
 
 /** Section layout, in board units: header band with the title, inner padding. */
 export const SECTION = { header: 72, pad: 40 } as const;
+
+/** "✨ Rysunek" in the top-right corner of a card's solution area. */
+export function cardDrawButton(el: TaskCardEl): Box {
+  const a = solutionArea(el);
+  return { x1: a.x2 - 142, y1: a.y1 + 8, x2: a.x2 - 10, y2: a.y1 + 38 };
+}
 
 /** Hints under the task, in the card's left part. */
 export const HINT = { fs: 16, line: 22, pad: 10, gap: 8, button: 36, font: '500 16px' } as const;
@@ -87,28 +93,31 @@ export function measureText(el: TextEl) {
 
 export const clearMeasureCache = () => measureCache.clear();
 
-// ---------- Rotated images ----------
-export const imageCenter = (el: ImageEl): Pt => [el.x + el.w / 2, el.y + el.h / 2];
+// ---------- Rotated boxes (images, and shapes with `rot`) ----------
+/** Anything drawn as a box turned around its centre. */
+export interface RotBox { x: number; y: number; w: number; h: number; rot?: number }
+
+export const imageCenter = (el: RotBox): Pt => [el.x + el.w / 2, el.y + el.h / 2];
 
 /** Rotates (x, y) by `rot` radians around the origin. */
 export const rotate = (x: number, y: number, rot: number): Pt =>
   [x * Math.cos(rot) - y * Math.sin(rot), x * Math.sin(rot) + y * Math.cos(rot)];
 
-/** World point -> the image's own frame (origin at its centre, unrotated). */
-export function toImageLocal(el: ImageEl, x: number, y: number): Pt {
+/** World point -> the box's own frame (origin at its centre, unrotated). */
+export function toImageLocal(el: RotBox, x: number, y: number): Pt {
   const [cx, cy] = imageCenter(el);
-  return rotate(x - cx, y - cy, -el.rot);
+  return rotate(x - cx, y - cy, -(el.rot ?? 0));
 }
 
-/** Image-local point -> world. */
-export function fromImageLocal(el: ImageEl, lx: number, ly: number): Pt {
+/** Box-local point -> world. */
+export function fromImageLocal(el: RotBox, lx: number, ly: number): Pt {
   const [cx, cy] = imageCenter(el);
-  const [rx, ry] = rotate(lx, ly, el.rot);
+  const [rx, ry] = rotate(lx, ly, el.rot ?? 0);
   return [cx + rx, cy + ry];
 }
 
 /** Corners in world coordinates: top-left, top-right, bottom-right, bottom-left. */
-export function imageCorners(el: ImageEl): [Pt, Pt, Pt, Pt] {
+export function imageCorners(el: RotBox): [Pt, Pt, Pt, Pt] {
   const hw = el.w / 2, hh = el.h / 2;
   return [fromImageLocal(el, -hw, -hh), fromImageLocal(el, hw, -hh), fromImageLocal(el, hw, hh), fromImageLocal(el, -hw, hh)];
 }
@@ -136,7 +145,8 @@ export function bbox(el: BoardElement): Box {
       const m = measureText(el);
       return { x1: el.x, y1: el.y, x2: el.x + m.w, y2: el.y + m.h };
     }
-    case 'image': {
+    case 'image': case 'rect': case 'ellipse': case 'triangle': {
+      if (el.type !== 'image' && !el.rot) return { x1: el.x, y1: el.y, x2: el.x + el.w, y2: el.y + el.h };
       const c = imageCorners(el);
       const xs = c.map(p => p[0]), ys = c.map(p => p[1]);
       return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
@@ -156,7 +166,11 @@ function distToSeg(px: number, py: number, ax: number, ay: number, bx: number, b
 export const triPts = (el: ShapeEl): [Pt, Pt, Pt] =>
   [[el.x + el.w / 2, el.y], [el.x + el.w, el.y + el.h], [el.x, el.y + el.h]];
 
-export function hit(el: BoardElement, x: number, y: number, tol: number): boolean {
+/**
+ * Is (x, y) on the element? With `forSelect`, outline shapes count anywhere inside (easier to pick with the
+ * select tool); without it (the eraser) only their edge counts, so erasing writing inside a shape keeps the shape.
+ */
+export function hit(el: BoardElement, x: number, y: number, tol: number, forSelect = false): boolean {
   switch (el.type) {
     case 'stroke': {
       const r = el.size / 2 + tol;
@@ -190,10 +204,28 @@ export function hit(el: BoardElement, x: number, y: number, tol: number): boolea
       return y <= el.y + CARD.header || x <= el.x + r || x >= el.x + el.w - r || y >= el.y + el.h - r;
     }
     case 'rect': case 'ellipse': case 'triangle': {
-      const b = bbox(el);
+      // Test in the shape's own (unrotated) frame.
+      if (el.rot) {
+        const [lx, ly] = toImageLocal(el, x, y);
+        x = el.x + el.w / 2 + lx;
+        y = el.y + el.h / 2 + ly;
+      }
+      const b = { x1: el.x, y1: el.y, x2: el.x + el.w, y2: el.y + el.h };
       const inside = x >= b.x1 - tol && x <= b.x2 + tol && y >= b.y1 - tol && y <= b.y2 + tol;
       if (!inside) return false;
       if (el.fill) return true;
+      if (forSelect) {
+        if (el.type === 'rect') return true;
+        if (el.type === 'ellipse') {
+          const rx = Math.max(1, el.w / 2) + tol, ry = Math.max(1, el.h / 2) + tol;
+          return Math.hypot((x - (b.x1 + b.x2) / 2) / rx, (y - (b.y1 + b.y2) / 2) / ry) <= 1;
+        }
+        const [a, bb, c] = triPts(el);
+        const sign = (p: Pt, q: Pt, r: Pt) => (p[0] - r[0]) * (q[1] - r[1]) - (q[0] - r[0]) * (p[1] - r[1]);
+        const d1 = sign([x, y], a, bb), d2 = sign([x, y], bb, c), d3 = sign([x, y], c, a);
+        const insideTri = !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+        if (insideTri) return true;
+      }
       // Outline-only: must be near the edge
       const r = el.size / 2 + tol;
       if (el.type === 'rect') return x <= b.x1 + r || x >= b.x2 - r || y <= b.y1 + r || y >= b.y2 - r;

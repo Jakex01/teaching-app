@@ -4,11 +4,12 @@
 import { nanoid } from 'nanoid';
 import { LINE_TYPES, SHAPE_TYPES, SIZES, TEXT_SIZES, TOOLS, toolDef, type SizeIndex, type ToolDef, type ToolId } from '../constants';
 import { getView, setPref, setView } from '../prefs';
+import { DrawingSpec, buildDrawing } from '../protocol';
 import { LIMITS, type BoardElement, type FollowCamera, type ImageEl, type LineEl, type ServerMessage, type SectionEl, type ShapeEl, type StrokeEl, type TaskCardEl, type TextEl, type User } from '../protocol';
 import { showToast, useUI, type Me } from '../store';
 import { Socket, defaultSyncUrl } from '../net/socket';
 import {
-  CARD, SECTION, bbox, clamp, clearMeasureCache, hintLayout, solutionArea, fromImageLocal, hit, imageCenter, imageCorners, normalizeAngle, rotate,
+  CARD, SECTION, bbox, cardDrawButton, clamp, clearMeasureCache, hintLayout, solutionArea, fromImageLocal, hit, imageCenter, imageCorners, normalizeAngle, rotate,
   translateEl, unionBox, wc, type Box, type Pt,
 } from './geometry';
 import { getImage } from './images';
@@ -30,7 +31,10 @@ type Drag =
   | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number; base: Set<string> }
   | { kind: 'resize'; before: ImageEl; corner: Corner; anchor: Pt }
   | { kind: 'rotate'; before: ImageEl; startAngle: number }
-  | { kind: 'sectionResize'; before: SectionEl };
+  | { kind: 'sectionResize'; before: SectionEl }
+  | { kind: 'shapeResize'; before: ShapeEl; signs: Pt; anchor: Pt }
+  | { kind: 'shapeRotate'; before: ShapeEl; startAngle: number }
+  | { kind: 'lineEnd'; before: LineEl; end: 1 | 2 };
 
 /** Image corners: top-left, top-right, bottom-right, bottom-left, as signs in the image's own frame. */
 type Corner = 0 | 1 | 2 | 3;
@@ -392,9 +396,14 @@ class BoardEngine {
   private toWorld(sx: number, sy: number) { return { x: sx / this.cam.z + this.cam.x, y: sy / this.cam.z + this.cam.y }; }
   toScreen(wx: number, wy: number) { return { x: (wx - this.cam.x) * this.cam.z, y: (wy - this.cam.y) * this.cam.z }; }
 
+  /** The topmost element under (x, y) for picking (select, text): shapes count inside, lines get extra room. */
   private topHit(x: number, y: number, tol: number) {
     const list = [...this.elements.values()];
-    for (let i = list.length - 1; i >= 0; i--) if (hit(list[i], x, y, tol)) return list[i];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const el = list[i];
+      const extra = el.type === 'line' || el.type === 'arrow' || el.type === 'stroke' ? 4 / this.cam.z : 0;
+      if (hit(el, x, y, tol + extra, true)) return el;
+    }
     return null;
   }
 
@@ -447,11 +456,11 @@ class BoardEngine {
         if (!el) continue;
         const b = bbox(el);
         const pad = 6 / cam.z;
-        if (el.type === 'image') {
-          // Follow the image's rotation instead of drawing its (larger) bounding box.
+        if (el.type === 'image' || ((el.type === 'rect' || el.type === 'ellipse' || el.type === 'triangle') && el.rot)) {
+          // Follow the rotation instead of drawing the (larger) bounding box.
           ctx.save();
           ctx.translate(...imageCenter(el));
-          ctx.rotate(el.rot);
+          ctx.rotate(el.rot ?? 0);
           ctx.strokeRect(-el.w / 2 - pad, -el.h / 2 - pad, el.w + pad * 2, el.h + pad * 2);
           ctx.restore();
         } else {
@@ -469,6 +478,7 @@ class BoardEngine {
       ctx.restore();
       this.drawImageHandles(ctx);
       this.drawSectionHandle(ctx);
+      this.drawShapeHandles(ctx);
     }
 
     const drag = this.drag;
@@ -657,6 +667,8 @@ class BoardEngine {
     // The "Podpowiedź" button on a task card works with any tool.
     const hintCard = this.hintButtonAt(w.x, w.y);
     if (hintCard) { void this.onHintButton(hintCard); return; }
+    const drawCard = this.drawButtonAt(w.x, w.y);
+    if (drawCard) { this.openDraw({ kind: 'card', id: drawCard.id }); return; }
 
     const sizeW = SIZES[style.size];
     const by = this.me.id ?? undefined;
@@ -684,6 +696,20 @@ class BoardEngine {
     } else if (tool === 'select') {
       const sectionHandle = this.sectionHandleAt(w.x, w.y);
       if (sectionHandle) { this.drag = { kind: 'sectionResize', before: clone(sectionHandle) }; return; }
+      const shapeHandle = this.shapeHandleAt(w.x, w.y);
+      if (shapeHandle) {
+        if (shapeHandle.kind === 'end') this.drag = { kind: 'lineEnd', before: clone(shapeHandle.el), end: shapeHandle.end };
+        else if (shapeHandle.kind === 'rotate') {
+          const [cx, cy] = imageCenter(shapeHandle.el);
+          this.drag = { kind: 'shapeRotate', before: clone(shapeHandle.el), startAngle: Math.atan2(w.y - cy, w.x - cx) };
+        } else {
+          // The opposite corner (or the opposite side's middle) stays where it is.
+          const [sx, sy] = shapeHandle.signs;
+          const b = shapeHandle.el;
+          this.drag = { kind: 'shapeResize', before: clone(b), signs: shapeHandle.signs, anchor: fromImageLocal(b, -sx * b.w / 2, -sy * b.h / 2) };
+        }
+        return;
+      }
       const handle = this.imageHandleAt(w.x, w.y);
       if (handle) {
         const before = clone(handle.el);
@@ -698,11 +724,13 @@ class BoardEngine {
       }
       const target = this.topHit(w.x, w.y, 6 / this.cam.z);
       if (target) {
+        // A click picks the whole group (a drawing); double-click picks one element inside it.
+        const picked = this.withGroups([target.id]);
         if (e.shiftKey) {
-          if (this.selection.has(target.id)) this.selection.delete(target.id);
-          else this.selection.add(target.id);
+          const on = this.selection.has(target.id);
+          for (const id of picked) { if (on) this.selection.delete(id); else this.selection.add(id); }
         } else if (!this.selection.has(target.id)) {
-          this.selection = new Set([target.id]);
+          this.selection = picked;
         }
         const before = [...this.selection].map(id => this.elements.get(id)).filter((el): el is BoardElement => !!el).map(clone);
         // Sections and task cards carry what's on them (tasks, written solutions), like frames.
@@ -803,6 +831,49 @@ class BoardEngine {
         this.requestDraw();
         break;
       }
+      case 'shapeResize': {
+        const el = this.elements.get(drag.before.id);
+        if (!el || (el.type !== 'rect' && el.type !== 'ellipse' && el.type !== 'triangle')) break;
+        const b = drag.before;
+        const [sx, sy] = drag.signs;
+        const rot = b.rot ?? 0;
+        // Pointer relative to the fixed anchor, in the shape's own frame.
+        const [lx, ly] = rotate(w.x - drag.anchor[0], w.y - drag.anchor[1], -rot);
+        const min = 6 / this.cam.z;
+        let nw = sx ? Math.max(lx * sx, min) : b.w;
+        let nh = sy ? Math.max(ly * sy, min) : b.h;
+        if (e.shiftKey && sx && sy) {
+          // Shift keeps the proportions (a circle stays a circle).
+          const k = Math.max(nw / b.w, nh / b.h);
+          nw = b.w * k; nh = b.h * k;
+        }
+        const [ox, oy] = rotate(sx * nw / 2, sy * nh / 2, rot);
+        el.w = wc(nw); el.h = wc(nh);
+        el.x = wc(drag.anchor[0] + ox - nw / 2);
+        el.y = wc(drag.anchor[1] + oy - nh / 2);
+        this.sendDraft(el);
+        this.requestDraw();
+        break;
+      }
+      case 'shapeRotate': {
+        const el = this.elements.get(drag.before.id);
+        if (!el || (el.type !== 'rect' && el.type !== 'ellipse' && el.type !== 'triangle')) break;
+        const [cx, cy] = imageCenter(drag.before);
+        let a = (drag.before.rot ?? 0) + Math.atan2(w.y - cy, w.x - cx) - drag.startAngle;
+        if (e.shiftKey) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12); // Shift: steps of 15°
+        el.rot = normalizeAngle(a);
+        this.sendDraft(el);
+        this.requestDraw();
+        break;
+      }
+      case 'lineEnd': {
+        const el = this.elements.get(drag.before.id);
+        if (!el || (el.type !== 'line' && el.type !== 'arrow')) break;
+        if (drag.end === 1) { el.x1 = wc(w.x); el.y1 = wc(w.y); } else { el.x2 = wc(w.x); el.y2 = wc(w.y); }
+        this.sendDraft(el);
+        this.requestDraw();
+        break;
+      }
       case 'sectionResize': {
         const el = this.elements.get(drag.before.id);
         if (el?.type !== 'section') break;
@@ -853,6 +924,7 @@ class BoardEngine {
           const b = bbox(el);
           if (b.x1 >= m.x1 && b.x2 <= m.x2 && b.y1 >= m.y1 && b.y2 <= m.y2) this.selection.add(el.id);
         }
+        this.selection = this.withGroups(this.selection);
         this.syncSelection();
         this.requestDraw();
         break;
@@ -887,7 +959,7 @@ class BoardEngine {
       case 'erase':
         if (d.removed.length) this.pushHistory({ kind: 'delete', els: d.removed });
         break;
-      case 'sectionResize': case 'resize': case 'rotate': {
+      case 'shapeResize': case 'shapeRotate': case 'lineEnd': case 'sectionResize': case 'resize': case 'rotate': {
         const el = this.elements.get(d.before.id);
         if (el) {
           this.send([el]);
@@ -927,7 +999,9 @@ class BoardEngine {
     if (this.tool !== 'select') return;
     const w = this.toWorld(e.clientX, e.clientY);
     const t = this.topHit(w.x, w.y, 6 / this.cam.z);
-    if (t?.type === 'text') { this.selection.clear(); this.syncSelection(); this.openTextEditor(t, false); }
+    if (t?.type === 'text') { this.selection.clear(); this.syncSelection(); this.openTextEditor(t, false); return; }
+    // Inside a group: just this one element (to move a label, recolour a circle…).
+    if (t && 'group' in t && t.group) { this.selection = new Set([t.id]); this.syncSelection(); this.requestDraw(); }
   }
 
   // ---------- Zoom & pan ----------
@@ -1087,6 +1161,15 @@ class BoardEngine {
   /** Mouse cursor over the handles: diagonal arrows that follow the image's rotation, or "grab" for rotating. */
   private handleCursor(x: number, y: number) {
     if (this.sectionHandleAt(x, y)) return 'nwse-resize';
+    const sh = this.shapeHandleAt(x, y);
+    if (sh) {
+      if (sh.kind === 'end') return 'crosshair';
+      if (sh.kind === 'rotate') return 'grab';
+      // Arrows that follow the shape's rotation, as for images.
+      const [dx, dy] = rotate(sh.signs[0], sh.signs[1], sh.el.rot ?? 0);
+      const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 180;
+      return deg < 22.5 || deg >= 157.5 ? 'ew-resize' : deg < 67.5 ? 'nwse-resize' : deg < 112.5 ? 'ns-resize' : 'nesw-resize';
+    }
     const h = this.imageHandleAt(x, y);
     if (!h) return '';
     if (h.kind === 'rotate') return 'grab';
@@ -1094,6 +1177,79 @@ class BoardEngine {
     const [dx, dy] = rotate(sx, sy, h.el.rot);
     const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 180;
     return deg < 22.5 || deg >= 157.5 ? 'ew-resize' : deg < 67.5 ? 'nwse-resize' : deg < 112.5 ? 'ns-resize' : 'nesw-resize';
+  }
+
+  /** The one selected shape or line (select tool), which gets resize handles. */
+  private selectedShape(): ShapeEl | LineEl | null {
+    if (this.tool !== 'select' || this.selection.size !== 1) return null;
+    const el = this.elements.get([...this.selection][0]);
+    return el && (el.type === 'rect' || el.type === 'ellipse' || el.type === 'triangle' || el.type === 'line' || el.type === 'arrow') ? el : null;
+  }
+
+  /** Resize handles of a shape, as signs in its own frame: 4 corners and the middle of each side (like Miro). */
+  private static readonly SHAPE_SIGNS: Pt[] = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+
+  private shapeRotateHandle(el: ShapeEl): Pt {
+    return fromImageLocal(el, 0, -el.h / 2 - ROTATE_HANDLE_PX / this.cam.z);
+  }
+
+  private shapeHandleAt(x: number, y: number):
+    | { kind: 'resize'; el: ShapeEl; signs: Pt }
+    | { kind: 'rotate'; el: ShapeEl }
+    | { kind: 'end'; el: LineEl; end: 1 | 2 }
+    | null {
+    const el = this.selectedShape();
+    if (!el) return null;
+    const r = (HANDLE_PX + 3) / this.cam.z;
+    if ('x1' in el) {
+      if (Math.hypot(x - el.x1, y - el.y1) <= r) return { kind: 'end', el, end: 1 };
+      if (Math.hypot(x - el.x2, y - el.y2) <= r) return { kind: 'end', el, end: 2 };
+      return null;
+    }
+    const [rx, ry] = this.shapeRotateHandle(el);
+    if (Math.hypot(x - rx, y - ry) <= r) return { kind: 'rotate', el };
+    for (const signs of BoardEngine.SHAPE_SIGNS) {
+      const [hx, hy] = fromImageLocal(el, signs[0] * el.w / 2, signs[1] * el.h / 2);
+      if (Math.hypot(x - hx, y - hy) <= r) return { kind: 'resize', el, signs };
+    }
+    return null;
+  }
+
+  private drawShapeHandles(ctx: CanvasRenderingContext2D) {
+    const el = this.selectedShape();
+    if (!el) return;
+    const z = this.cam.z;
+    const half = (HANDLE_PX - 2) / z;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 2 / z;
+    ctx.strokeStyle = '#1E1B3A';
+    ctx.fillStyle = '#FFFFFF';
+    if ('x1' in el) {
+      for (const [hx, hy] of [[el.x1, el.y1], [el.x2, el.y2]]) {
+        ctx.beginPath(); ctx.arc(hx, hy, half + 1 / z, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      }
+      ctx.restore();
+      return;
+    }
+    // Rotation handle on a stem above the shape (as for images)
+    const [rx, ry] = this.shapeRotateHandle(el);
+    const [tx, ty] = fromImageLocal(el, 0, -el.h / 2);
+    ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(rx, ry); ctx.stroke();
+    ctx.fillStyle = '#FFC93C';
+    ctx.beginPath(); ctx.arc(rx, ry, HANDLE_PX / z, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#FFFFFF';
+    for (const [sx, sy] of BoardEngine.SHAPE_SIGNS) {
+      const [hx, hy] = fromImageLocal(el, sx * el.w / 2, sy * el.h / 2);
+      const k = sx && sy ? 1 : 0.8; // side handles a little smaller
+      ctx.save();
+      ctx.translate(hx, hy);
+      ctx.rotate(el.rot ?? 0);
+      ctx.fillRect(-half * k, -half * k, half * 2 * k, half * 2 * k);
+      ctx.strokeRect(-half * k, -half * k, half * 2 * k, half * 2 * k);
+      ctx.restore();
+    }
+    ctx.restore();
   }
 
   /** The one selected section's bottom-right corner, for resizing it by hand. */
@@ -1346,6 +1502,109 @@ class BoardEngine {
     section.w = wc(section.w + delta);
     updates.set(section.id, section);
   }
+
+  // ---------- Groups ----------
+  /** The ids plus every element sharing a group with one of them. */
+  private withGroups(ids: Iterable<string>): Set<string> {
+    const out = new Set(ids);
+    const groups = new Set<string>();
+    for (const id of out) { const g = (this.elements.get(id) as { group?: string } | undefined)?.group; if (g) groups.add(g); }
+    if (groups.size) for (const el of this.elements.values()) if ('group' in el && el.group && groups.has(el.group)) out.add(el.id);
+    return out;
+  }
+
+  // ---------- ✨ Drawings made by AI ----------
+  private drawUrl = '/api/draw';
+
+  private drawButtonAt(x: number, y: number): TaskCardEl | null {
+    for (const el of this.elements.values()) {
+      if (el.type !== 'task') continue;
+      const b = cardDrawButton(el);
+      if (b.x1 > solutionArea(el).x1 + 130 && x >= b.x1 && x <= b.x2 && y >= b.y1 && y <= b.y2) return el;
+    }
+    return null;
+  }
+
+  /** Opens the dialog. Without a target: the selected task card if there is one, otherwise the middle of the view. */
+  openDraw = (target?: { kind: 'card'; id: string } | { kind: 'view' }) => {
+    if (!this.ticket) { showToast('Rysowanie z AI działa w zeszytach uczniów.', 3000); return; }
+    if (!target) {
+      const only = this.selection.size === 1 ? this.elements.get([...this.selection][0]) : undefined;
+      target = only?.type === 'task' ? { kind: 'card', id: only.id } : { kind: 'view' };
+    }
+    useUI.setState({ draw: { target, status: 'idle', message: null, title: null, preview: null, warnings: [] } });
+  };
+
+  closeDraw = () => useUI.setState({ draw: null });
+
+  /** Asks the AI for a drawing description, then computes the figure here (exact geometry) for the preview. */
+  requestDrawing = async (prompt: string) => {
+    const state = useUI.getState().draw;
+    if (!state || !this.ticket) return;
+    useUI.setState({ draw: { ...state, status: 'loading', message: null } });
+    const fail = (message: string) => { const cur = useUI.getState().draw; if (cur) useUI.setState({ draw: { ...cur, status: 'error', message } }); };
+    const res = await fetch(this.drawUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Board-Ticket': this.ticket },
+      body: JSON.stringify({ prompt }),
+      credentials: 'same-origin',
+    }).catch(() => null);
+    const data: { spec?: unknown; error?: unknown } = res ? await res.json().catch(() => ({})) : {};
+    if (!res?.ok) return fail(typeof data.error === 'string' ? data.error : 'Nie udało się narysować.');
+    const spec = DrawingSpec.safeParse(data.spec);
+    if (!spec.success) return fail('Nie udało się narysować. Spróbuj opisać to inaczej.');
+    const built = buildDrawing(spec.data, newId);
+    if (!built.elements.length) return fail(built.warnings[0] ?? 'Nie ma czego narysować.');
+    const cur = useUI.getState().draw;
+    if (!cur) return; // closed meanwhile
+    useUI.setState({ draw: {
+      ...cur, status: 'preview', message: null, title: spec.data.title ?? null, warnings: built.warnings,
+      preview: { elements: built.elements, width: built.width, height: built.height },
+    } });
+  };
+
+  /** Puts the previewed drawing on the board: into the card's solution area, or in the middle of the view. */
+  insertDrawing = () => {
+    const state = useUI.getState().draw;
+    if (!state?.preview || !this.me) return;
+    const { elements, width, height } = state.preview;
+    const by = this.me.id ?? undefined;
+    let at: { x: number; y: number };
+    const card = state.target.kind === 'card' ? this.elements.get(state.target.id) : undefined;
+    if (card?.type === 'task') {
+      // In the solution area, under what's already written there.
+      const area = solutionArea(card);
+      let lowest = area.y1 + 40;
+      for (const el of this.elements.values()) {
+        if (el.type === 'task' || el.type === 'section') continue;
+        const b = bbox(el);
+        const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2;
+        if (cx >= area.x1 && cx <= area.x2 && cy >= area.y1 && cy <= area.y2) lowest = Math.max(lowest, b.y2 + 16);
+      }
+      at = { x: area.x1 + 12, y: lowest };
+    } else {
+      const c = this.toWorld(innerWidth / 2, innerHeight / 2);
+      at = { x: c.x - width / 2, y: c.y - height / 2 };
+    }
+    const group = newId(); // the drawing moves as one piece (double-click edits a part)
+    const placed = elements.map(el => {
+      const copy = clone(el);
+      copy.id = newId();
+      copy.by = by;
+      if (copy.type !== 'task' && copy.type !== 'section') copy.group = group;
+      translateEl(copy, wc(at.x), wc(at.y));
+      return copy;
+    });
+    this.addEls(placed);
+    this.pushHistory({ kind: 'add', els: placed.map(clone) });
+    this.growCards(placed);
+    this.setTool('select');
+    this.selection = new Set(placed.map(el => el.id));
+    this.syncSelection();
+    this.requestDraw();
+    useUI.setState({ draw: null });
+    showToast('Rysunek wstawiony ✨ Przeciągnij, żeby przesunąć; dwuklik edytuje część', 4000);
+  };
 
   // ---------- Hints on task cards ----------
   private hintsLoading = new Set<string>();
@@ -1715,6 +1974,7 @@ class BoardEngine {
       return;
     }
     if (mod && key === 'd' && this.selection.size) { e.preventDefault(); this.duplicateSelection(); return; }
+    if (mod && key === 'k') { e.preventDefault(); this.openDraw(); return; }
     if (mod) return;
     if ((e.key === 'Delete' || e.key === 'Backspace') && this.selection.size) {
       const els = [...this.selection].map(id => this.elements.get(id)).filter((el): el is BoardElement => !!el).map(clone);
@@ -1733,11 +1993,16 @@ class BoardEngine {
 
   private duplicateSelection() {
     const copies: BoardElement[] = [];
+    const newGroups = new Map<string, string>(); // a copied drawing is its own group
     for (const id of this.selection) {
       const el = this.elements.get(id);
       if (!el) continue;
       const c = clone(el);
       c.id = newId();
+      if ('group' in c && c.group) {
+        if (!newGroups.has(c.group)) newGroups.set(c.group, newId());
+        c.group = newGroups.get(c.group);
+      }
       c.by = this.me?.id ?? undefined;
       translateEl(c, 24, 24);
       copies.push(c);

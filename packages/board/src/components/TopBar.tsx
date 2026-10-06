@@ -3,6 +3,7 @@ import { engine } from '../board/engine';
 import { inviteLink } from '../room';
 import { showToast, useUI } from '../store';
 import { BackIcon, BrandIcon, EyeIcon, InviteIcon, TrashIcon } from './Icons';
+import { DrawButton } from './DrawDialog';
 import { PdfButton, SolutionSpaceButton } from './PdfImport';
 
 export function TopLeft() {
@@ -108,6 +109,7 @@ export function TopRight() {
   return (
     <aside className="top-right">
       <SolutionSpaceButton />
+      {inNotebook && <DrawButton />}
       {inNotebook && <PdfButton />}
       {isTeacher && <TeacherTools />}
       <People />

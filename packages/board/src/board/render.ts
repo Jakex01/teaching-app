@@ -1,6 +1,6 @@
 import { FONT } from '../constants';
 import type { BoardElement, SectionEl, StrokeEl, TaskCardEl } from '../protocol';
-import { CARD, HINT, SECTION, clamp, hintLayout, solutionArea, triPts } from './geometry';
+import { CARD, HINT, SECTION, cardDrawButton, clamp, hintLayout, solutionArea, triPts } from './geometry';
 import { getStroke } from 'perfect-freehand';
 import { getImage } from './images';
 
@@ -82,6 +82,11 @@ export function drawElement(ctx: CanvasRenderingContext2D, el: BoardElement, onI
       break;
     }
     case 'rect': case 'ellipse': case 'triangle': {
+      if (el.rot) {
+        ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
+        ctx.rotate(el.rot);
+        ctx.translate(-(el.x + el.w / 2), -(el.y + el.h / 2));
+      }
       ctx.lineWidth = el.size;
       ctx.beginPath();
       if (el.type === 'rect') {
@@ -162,6 +167,23 @@ function drawTaskCard(ctx: CanvasRenderingContext2D, el: TaskCardEl) {
   ctx.textBaseline = 'top';
   ctx.fillStyle = 'rgba(30,27,58,0.42)';
   ctx.fillText('Rozwiązanie', a.x1 + 14, a.y1 + 12);
+
+  // "✨ Rysunek": a figure drawn by AI, straight into this solution area
+  const db = cardDrawButton(el);
+  if (db.x1 > a.x1 + 130) {
+    ctx.fillStyle = '#FFFFFF';
+    ctx.strokeStyle = tint(el.color, 0.9);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(db.x1, db.y1, db.x2 - db.x1, db.y2 - db.y1, 15);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#1E1B3A';
+    ctx.font = `700 14px ${FONT}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('✨ Rysunek', db.x1 + 14, (db.y1 + db.y2) / 2 + 1);
+    ctx.textBaseline = 'top';
+  }
 
   // Hints under the task, and the button for the next one
   const layout = hintLayout(el);

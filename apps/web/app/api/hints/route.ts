@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { assetSrc } from '@teaching/shared';
 import { isProtectedRoom, verifyTicket } from '@teaching/shared/ticket';
 import { HintsError, aiEnabled, hintsForTask } from '@/lib/ai/hints';
+import { allowAiCall } from '@/lib/ai/limits';
 import { readAsset } from '@/lib/assets';
 import { syncSecret } from '@/lib/secrets';
 
@@ -11,20 +12,6 @@ import { syncSecret } from '@/lib/secrets';
 
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 const Body = z.object({ src: assetSrc });
-
-// Spending guard: per notebook and for the whole app, per day (per server process). Cached tasks don't count.
-const PER_ROOM = 40;
-const PER_APP = 300;
-const DAY = 24 * 60 * 60 * 1000;
-const calls = new Map<string, number[]>();
-function allow(key: string, max: number) {
-  const now = Date.now();
-  const times = (calls.get(key) ?? []).filter(t => now - t < DAY);
-  if (times.length >= max) return false;
-  times.push(now);
-  calls.set(key, times);
-  return true;
-}
 
 export async function POST(request: NextRequest) {
   const ticket = verifyTicket(request.headers.get('x-board-ticket') ?? '', syncSecret());
@@ -40,7 +27,7 @@ export async function POST(request: NextRequest) {
   if (!asset) return json({ error: 'Nie znaleziono obrazu zadania.' }, 404);
 
   try {
-    const hints = await hintsForTask(asset.bytes, asset.type, () => allow(`room:${room}`, PER_ROOM) && allow('app', PER_APP));
+    const hints = await hintsForTask(asset.bytes, asset.type, () => allowAiCall(room));
     return json({ hints });
   } catch (e) {
     const reason = e instanceof HintsError ? e.message : 'unknown';

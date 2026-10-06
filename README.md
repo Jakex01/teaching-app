@@ -198,6 +198,12 @@ docker-compose.yml     PostgreSQL for development; the full stack with --profile
 
 Frontend code lives in `apps/web` and `packages/board`. Backend code lives in `apps/sync` and, later, the API routes in `apps/web`. Both sides validate with the same schemas from `packages/shared`.
 
+## ✨ Drawing with AI
+
+**✨ Rysuj** on the top bar (or Ctrl+K), or **✨ Rysunek** in a task card's solution area: describe a figure in words (“okrąg wpisany w czworokąt ABCD”, “dwa okręgi styczne zewnętrznie”, “trójkąt ABC z wysokością CD”, “wykres y = x^2 − 4x + 3”). The AI only returns a *description* of the drawing (points, segments, circles and constructions such as inscribed/circumscribed circles, tangent circles, tangents from a point, feet of perpendiculars, intersections, axes and graphs); `packages/shared/src/drawing.ts` computes the geometry exactly (an inscribed circle really touches every side) and turns it into ordinary board elements. Graphs are drawn by a small formula parser (`packages/shared/src/expr.ts`: numbers, x, + − · / ^, brackets, sin/cos/tg/sqrt/abs/ln/log/exp), never by running code. A preview comes first (Wstaw / Spróbuj inaczej); inserting is one undo step. The AI is told never to solve or add values that weren't asked for; its answer is validated before anything is drawn. Same daily AI limits as hints (`apps/web/lib/ai/limits.ts`).
+
+**Shapes** (rectangle, ellipse, triangle): click inside to select; 8 handles resize like in Miro (Shift keeps proportions), the round handle above rotates (Shift: steps of 15°). Lines and arrows have a handle at each end. The eraser still takes shapes only by their edge, so erasing writing inside a shape keeps the shape.
+
 ## Whiteboard tools
 
 | Key | Tool | | Key | Tool |

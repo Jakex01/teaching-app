@@ -101,3 +101,10 @@ describe('stroke points', () => {
     expect(ElementSchema.safeParse({ ...stroke, pts: [[0, 0, 1.5]] }).success).toBe(false);
   });
 });
+
+describe('groups', () => {
+  it('lets drawing elements share a group, and refuses odd group ids', () => {
+    expect(ElementSchema.safeParse({ ...rect, group: 'g1abc' }).success).toBe(true);
+    expect(ElementSchema.safeParse({ ...rect, group: '../x' }).success).toBe(false);
+  });
+});

@@ -66,6 +66,9 @@ resource "google_compute_firewall" "ssh_iap" {
 }
 
 # ---------- Backups bucket ----------
+# No access logging: it would need a second bucket just for logs. Only the VM's service account can
+# write here (no public access), and admin operations are recorded by Cloud Audit Logs anyway.
+# nosemgrep: terraform.gcp.security.gcp-cloud-storage-logging.gcp-cloud-storage-logging
 resource "google_storage_bucket" "backups" {
   name                        = "${var.project_id}-backups"
   location                    = var.region

@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@teaching/shared": "*",
-    "nanoid": "^6.0.1",
+    "nanoid": "^6.0.2",
     "pdfjs-dist": "^6.4.299",
     "perfect-freehand": "^1.2.3",
     "react": "^19.3.0",

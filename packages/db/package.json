@@ -15,12 +15,12 @@
     "teacher:create": "tsx src/create-teacher.ts"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite": "^0.5.10",
     "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.3",
+    "drizzle-orm": "^0.45.4",
     "postgres": "^3.4.9"
   }
 }
